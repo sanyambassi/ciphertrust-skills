@@ -106,18 +106,19 @@ Details: [references/checklist.md](references/checklist.md).
 |------|----------|
 | Alive | Services, system info, cluster, NTP |
 | Operations | Backups, alarms, licenses, SMTP, banner, RoT key age |
-| Interfaces | Interface modes/TLS; leaf TLS cert expiry (`/interfaces/{name}/certificate`); log forwarders; SSH/SNMP/preboot; SMTP |
+| Interfaces | Interface modes/TLS; web PQC TLS groups; leaf TLS cert expiry (`/interfaces/{name}/certificate`); log forwarders; SSH/SNMP/preboot; SMTP |
 | Access | Password policies, LDAP TLS, users (locked / never-login / inactive / failed logins / top logins) |
 | CAs | Local, external, trusted cert expiry (same scale: expired CRITICAL; ≤30d WARNING; >30d INFO) |
-| Keys | Global Prometheus key totals + per-domain vault scan |
+| Keys | Prometheus vault DEK totals + per-domain vault scan (weak / inactive keys) |
 | CTE | Client health, GuardPoints, Learn Mode (`--no-cte` to skip) |
 | Audit | Recent records by severity (skipped on CM 2.24+; DB audit removed) |
 
 ### Keys
 
-- Global: Prometheus scrape when enabled (never report the scrape token).
-- Per domain: login with token `domain` parameter, page `/v1/vault/keys2/` and users
-  (hygiene checks + top 5 by `logins_count`, up to `--max-users`).
+- Estate key count: Prometheus vault **DEK** totals when enabled (never the scrape token).
+  Do not sum per-domain license `including_subdomains` series — that under/over-counts.
+- Per domain (for weak/inactive keys + user hygiene): login with token `domain` parameter,
+  page `/v1/vault/keys2/` and users (top 5 by `logins_count`, up to `--max-users`).
 - Domain 401/403: skip and report that the domain could not be checked.
 
 ## Scoring
@@ -125,8 +126,8 @@ Details: [references/checklist.md](references/checklist.md).
 | Severity | Meaning |
 |----------|---------|
 | CRITICAL | Appliance failing or crypto floor broken (services down — not merely `disabled`, TCP mode `no-tls-*`, weak TLS minimum, expired license, expired interface TLS or CA cert, RoT key ≥ 12 months, server audit critical/fatal in last 7 days on CM before 2.24) |
-| WARNING | Usable but needs attention (includes disk not encrypted, non-web interface modes other than `tls-cert-and-pw` / TCP, TLS/CA certs ≤30 days left, RoT ≥ 6 months) → overall **DEGRADED** |
-| INFO | Awareness only (includes web interface modes, preferred `tls-cert-and-pw`, TLS/CA certs with >30 days left); does not change overall |
+| WARNING | Usable but needs attention (includes disk not encrypted, non-web interface modes other than `tls-cert-and-pw` / TCP, web without PQC TLS groups, TLS/CA certs ≤30 days left, RoT ≥ 6 months) → overall **DEGRADED** |
+| INFO | Awareness only (includes web interface modes, preferred `tls-cert-and-pw`, web PQC enabled, TLS/CA certs with >30 days left); does not change overall |
 
 | Overall | Exit |
 |---------|------|

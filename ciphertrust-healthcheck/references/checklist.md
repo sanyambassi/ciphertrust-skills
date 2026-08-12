@@ -41,12 +41,16 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 15. `GET /v1/configs/interfaces/` (auth modes per Thales interface auth docs)
     - Enabled TCP mode `no-tls-*` (no TLS) → CRITICAL
     - Enabled `tls-cert-and-pw` (preferred) → INFO
+    - Service interfaces present but none on `tls-cert-and-pw` → WARNING
     - `interface_type=web` non-TCP mode → INFO (web cannot use tls-cert-and-pw; only supported web mode)
     - Any other enabled auth mode (`unauth-tls-*`, `tls-pw-*`, `tls-cert-pw-opt`, …) → WARNING
     - SSH / SNMP interfaces (any count, including multiples): report configured name/port/enabled as INFO (no mode scoring; `mode` is null)
     - Preboot interface (auto when disk encryption is enabled): INFO when present; scored with disk encryption, not as a TLS mode finding
     - Weak minimum TLS (`tls_1_0`, `tls_1_1`, `ssl_v3`) → CRITICAL
-    - Disabled interface, or no PQC groups when `tls_groups` exist → INFO
+    - Disabled interface → INFO
+    - Web interface PQC: enabled web `tls_groups` with any of
+      `X25519MLKEM768` / `SecP256r1MLKEM768` / `MLKEM512` / `MLKEM768` / `MLKEM1024`
+      → INFO; none enabled → WARNING (classic groups only by default)
     - TLS server cert via `GET /v1/configs/interfaces/{name}/certificate` (leaf PEM):
       expired → CRITICAL; ≤30 days left → WARNING; >30 days → INFO
 16. `GET /v1/configs/log-forwarders/` — none active → WARNING
@@ -65,8 +69,7 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 
 20. `GET /v1/domains` — `allow_user_management` / HSM-backed → INFO
 21. `GET /v1/reports/orphaned-resources` — orphaned keys → WARNING
-22. `GET /v1/reports/capacity-report` — key usage (shown under Keys in the report)
-22a. Quorum:
+22. Quorum:
     - `GET /v1/quorum-mgmt/policy/status` (page fully; use API `total`) — policy `active: true` = **enabled** in GUI; report enabled / total policies
     - `GET /v1/quorum-mgmt/quorums` — count requests by state; report active / pre-active / total requests
 
@@ -80,8 +83,11 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 
 ## Keys
 
-24. Global: scrape `GET /v1/system/metrics/prometheus` when enabled (never include scrape token in the report)
-25. Per domain: authenticate with token `domain` parameter, then page `/v1/vault/keys2/` and `/v1/usermgmt/users/`
+24. Estate key count: scrape `GET /v1/system/metrics/prometheus` when enabled (never include scrape token).
+    Report vault **DEK** totals — do not sum per-domain license
+    `key_usage_count_including_subdomains` series (under/over-counts the estate).
+25. Per domain (weak/inactive keys + user hygiene): authenticate with token `domain` parameter,
+    then page `/v1/vault/keys2/` and `/v1/usermgmt/users/`
     - Weak RSA (< 2048) or AES (< 128) → WARNING
     - Highest key version inactive (not `Active`) → WARNING
     - User hygiene + top 5 by logins (see access control)

@@ -94,12 +94,13 @@ def interface_mode_severity(
     return "WARNING"
 
 
+# Web TLS key-exchange groups (Thales CM PQC docs). Compared case-insensitively.
 PQC_GROUPS = {
-    "X25519MLKEM768",
-    "SecP256r1MLKEM768",
-    "MLKEM512",
-    "MLKEM768",
-    "MLKEM1024",
+    "x25519mlkem768",
+    "secp256r1mlkem768",
+    "mlkem512",
+    "mlkem768",
+    "mlkem1024",
 }
 ALARM_CRITICAL_SEVS = {"critical", "emergency", "alert", "error"}
 SIGNIFICANT_RECORD_SEVS = {"error", "critical", "fatal"}
@@ -439,6 +440,54 @@ def check_services(ctx: ReportCtx, data: Any) -> None:
     ctx.section("services_status", result, detail, 200)
 
 
+def _cluster_error_reason(msg: str) -> str:
+    """Short plain-English label for a CM cluster/RAFT error message."""
+    raw = (msg or "").strip()
+    if not raw:
+        return "unknown cluster error"
+    m = raw.lower()
+    if "no leader" in m:
+        return "no etcd leader"
+    if "no route to" in m or "failed to connect to remote peer" in m:
+        return "peer unreachable"
+    if "leased session" in m or ("lease" in m and "deadline" in m):
+        return "etcd lease timeout"
+    if "context deadline exceeded" in m:
+        return "cluster RPC timeout"
+    if "connection refused" in m:
+        return "peer connection refused"
+    # Keep RAFT/etcd suffix when present; truncate for Summary
+    short = raw.split(":", 1)[-1].strip() if ":" in raw else raw
+    short = re.sub(r"\s+", " ", short)
+    return short[:72] + ("…" if len(short) > 72 else "")
+
+
+def _extract_cluster_error_reasons(resources: list[Any]) -> list[str]:
+    """Dedupe short reasons from /v1/cluster/errors resource entries."""
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for entry in resources:
+        if not isinstance(entry, dict):
+            continue
+        msgs = entry.get("clusterErrors") or entry.get("errors") or []
+        if isinstance(msgs, dict):
+            msgs = [msgs]
+        if not isinstance(msgs, list):
+            continue
+        for item in msgs:
+            if isinstance(item, dict):
+                text = str(item.get("errorMessage") or item.get("message") or "")
+            else:
+                text = str(item or "")
+            reason = _cluster_error_reason(text)
+            key = reason.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            reasons.append(reason)
+    return reasons
+
+
 def check_cluster(ctx: ReportCtx, client: CmClient) -> None:
     cluster, err = safe_get(client, "/v1/cluster")
     if err:
@@ -470,15 +519,32 @@ def check_cluster(ctx: ReportCtx, client: CmClient) -> None:
         elif isinstance(errors, list):
             resources = errors
         if resources:
+            reasons = _extract_cluster_error_reasons(resources)
+            reason_txt = "; ".join(reasons[:4]) if reasons else "see cluster errors"
             ctx.add(
                 "system",
                 "cluster_errors",
                 "CRITICAL",
-                f"Cluster reports {len(resources)} error(s).",
+                f"Cluster reports errors on {len(resources)} node(s)"
+                + (f": {reason_txt}." if reason_txt else "."),
             )
-            ctx.section("cluster_errors", "FAIL", {"count": len(resources), "sample": resources[:5]}, 200)
+            ctx.section(
+                "cluster_errors",
+                "FAIL",
+                {
+                    "count": len(resources),
+                    "reasons": reasons,
+                    "sample": resources[:5],
+                },
+                200,
+            )
         else:
-            ctx.section("cluster_errors", "PASS", {"count": 0}, 200)
+            ctx.section(
+                "cluster_errors",
+                "PASS",
+                {"count": 0, "reasons": []},
+                200,
+            )
 
     nodes, err = safe_get(client, "/v1/nodes")
     if err:
@@ -543,18 +609,37 @@ def check_banner(ctx: ReportCtx, client: CmClient) -> None:
         )
 
 
-def _disk_is_encrypted(data: dict[str, Any] | None) -> bool:
-    """Interpret /v1/locker/diskenc/status for encrypted vs not."""
+def _disk_enc_state(data: dict[str, Any] | None) -> str:
+    """Return encrypted | encrypting | not_encrypted | unknown from diskenc status."""
     if not isinstance(data, dict):
-        return False
-    if data.get("hasDEK") is True:
-        return True
+        return "unknown"
     status = str(data.get("encryptionStatus") or "").strip().lower()
-    if not status:
-        return False
+    has_dek = data.get("hasDEK") is True
+    # In-progress (ksctl shows "Encrypting..."); do not treat as fully encrypted yet.
+    if status and (
+        "encrypting" in status
+        or "in progress" in status
+        or "in-progress" in status
+        or status in ("pending", "started")
+    ):
+        return "encrypting"
     if "not encrypt" in status or status in ("unencrypted", "none", "disabled"):
-        return False
-    return "encrypt" in status
+        return "not_encrypted"
+    if has_dek:
+        return "encrypted"
+    if status in ("encrypted", "enabled", "complete", "completed", "done"):
+        return "encrypted"
+    if status and "encrypt" in status:
+        # e.g. "encryption enabled" — avoid matching bare unknowns
+        return "encrypted"
+    if status:
+        return "unknown"
+    return "not_encrypted" if data.get("hasDEK") is False else "unknown"
+
+
+def _disk_is_encrypted(data: dict[str, Any] | None) -> bool:
+    """True only when disk encryption has completed (not merely in progress)."""
+    return _disk_enc_state(data) == "encrypted"
 
 
 def check_diskenc(ctx: ReportCtx, client: CmClient) -> None:
@@ -564,7 +649,9 @@ def check_diskenc(ctx: ReportCtx, client: CmClient) -> None:
         ctx.section("disk_encryption", "WARN", {"error": str(err)}, err.status)
         return
 
-    encrypted = _disk_is_encrypted(data if isinstance(data, dict) else None)
+    state = _disk_enc_state(data if isinstance(data, dict) else None)
+    encrypted = state == "encrypted"
+    encrypting = state == "encrypting"
     attended = (data or {}).get("attendedBoot") is True
     status = (data or {}).get("encryptionStatus")
 
@@ -592,10 +679,21 @@ def check_diskenc(ctx: ReportCtx, client: CmClient) -> None:
         "attendedBoot": (data or {}).get("attendedBoot"),
         "hasDEK": (data or {}).get("hasDEK"),
         "encrypted": encrypted,
+        "encrypting": encrypting,
+        "state": state,
         "preboot_interfaces": preboot,
     }
 
-    if encrypted:
+    if encrypting:
+        ctx.add(
+            "system",
+            "diskenc_in_progress",
+            "INFO",
+            f"Disk encryption is in progress (status={status!r}, hasDEK="
+            f"{(data or {}).get('hasDEK')}). API may be unavailable until restart "
+            f"completes; preboot appears after encryption finishes.",
+        )
+    elif encrypted:
         ctx.add(
             "system",
             "diskenc_enabled",
@@ -650,8 +748,12 @@ def check_diskenc(ctx: ReportCtx, client: CmClient) -> None:
             "Disk encryption attendedBoot is ENABLED (manual passphrase at boot).",
         )
 
-    warn = (not encrypted) or attended or (encrypted and not preboot) or (
-        (not encrypted) and bool(preboot)
+    # In-progress is informational (not a posture WARN); unfinished/not encrypted is.
+    warn = (
+        (state == "not_encrypted")
+        or attended
+        or (encrypted and not preboot)
+        or ((not encrypted) and (not encrypting) and bool(preboot))
     )
     ctx.section("disk_encryption", "WARN" if warn else "PASS", detail, 200)
 
@@ -859,7 +961,8 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
     preboot_ifaces: list[dict] = []
     weak_tls = []
     disabled = []
-    no_pqc = []
+    no_pqc = []  # web interfaces with no PQC TLS group enabled
+    web_pqc_ok = []  # web interfaces with at least one PQC group enabled
     cert_expired = []
     cert_expiring = []
     cert_ok = []
@@ -977,22 +1080,34 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                 "CRITICAL",
                 f"Service interface '{name}' has weak minimum TLS '{tls}'.",
             )
+        # PQC TLS groups apply to the web interface (Thales CM docs).
         tls_groups = i.get("tls_groups") or []
-        if enabled and isinstance(tls_groups, list) and tls_groups:
-            pqc = [
-                g.get("group_name")
-                for g in tls_groups
-                if isinstance(g, dict)
-                and g.get("group_name") in PQC_GROUPS
-                and g.get("enabled")
-            ]
-            if not pqc:
+        if enabled and itype == "web":
+            pqc = []
+            if isinstance(tls_groups, list):
+                for g in tls_groups:
+                    if not isinstance(g, dict) or not g.get("enabled"):
+                        continue
+                    gname = str(g.get("group_name") or "").strip().lower()
+                    if gname in PQC_GROUPS:
+                        pqc.append(g.get("group_name"))
+            if pqc:
+                web_pqc_ok.append({"name": name, "groups": pqc[:8]})
+                ctx.add(
+                    "network",
+                    "net_web_pqc_enabled",
+                    "INFO",
+                    f"Web interface '{name}' has PQC TLS key-exchange enabled: "
+                    f"{', '.join(str(x) for x in pqc[:8])}.",
+                )
+            else:
                 no_pqc.append(name)
                 ctx.add(
                     "network",
-                    "net_interface_no_pqc",
-                    "INFO",
-                    f"Service interface '{name}' has no PQC key-exchange group enabled.",
+                    "net_web_no_pqc",
+                    "WARNING",
+                    f"Web interface '{name}' has no PQC TLS key-exchange group "
+                    f"enabled (classic groups only; enable e.g. X25519MLKEM768).",
                 )
 
         if (
@@ -1068,6 +1183,17 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
 
     _mgmt_iface_summary("ssh", ssh_ifaces)
     _mgmt_iface_summary("snmp", snmp_ifaces)
+    # Prefer at least one service interface on tls-cert-and-pw (mutual auth + password).
+    service_auth_modes = len(tcp_mode) + len(mode_warn) + len(mode_preferred)
+    no_mutual_auth_pw = bool(service_auth_modes and not mode_preferred)
+    if no_mutual_auth_pw:
+        ctx.add(
+            "network",
+            "net_no_tls_cert_and_pw",
+            "WARNING",
+            "No TLS-enabled service interface requires client cert (mutual auth) "
+            "and password (tls-cert-and-pw).",
+        )
     if preboot_ifaces:
         en = [x for x in preboot_ifaces if x.get("enabled")]
         parts = []
@@ -1090,7 +1216,15 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
             + ".",
         )
     result = "FAIL" if (tcp_mode or weak_tls or cert_expired) else (
-        "WARN" if (mode_warn or cert_expiring or cert_errors) else "PASS"
+        "WARN"
+        if (
+            mode_warn
+            or cert_expiring
+            or cert_errors
+            or no_pqc
+            or no_mutual_auth_pw
+        )
+        else "PASS"
     )
     ctx.section(
         "interfaces",
@@ -1103,6 +1237,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
             "cleartext_modes": tcp_mode,
             "mode_warn": mode_warn,
             "mode_preferred": mode_preferred,
+            "no_mutual_auth_pw": no_mutual_auth_pw,
             "mode_web_ok": mode_web_ok,
             "ssh_interfaces": ssh_ifaces,
             "snmp_interfaces": snmp_ifaces,
@@ -1111,7 +1246,9 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                 m for m in mode_warn if str(m.get("mode") or "").startswith("unauth-tls")
             ],
             "weak_tls": weak_tls,
-            "no_pqc": no_pqc[:20],
+            "web_pqc_ok": web_pqc_ok[:20],
+            "web_no_pqc": no_pqc[:20],
+            "no_pqc": no_pqc[:20],  # alias
             "tls_certs_expired": cert_expired,
             "tls_certs_expiring_soon": cert_expiring,
             "tls_certs_ok": cert_ok[:20],
@@ -1866,13 +2003,20 @@ def collect_keys_summary(sections: list[dict]) -> dict[str, Any]:
         if isinstance(c, dict)
     ]
     result = _sec_result(by, "keys_domains") or _sec_result(by, "keys_metrics")
+    deks_by_state = metrics.get("deks_by_state") or {}
+    deks_total = metrics.get("deks_total")
+    if deks_total is None and isinstance(deks_by_state, dict) and deks_by_state:
+        deks_total = sum(int(v or 0) for v in deks_by_state.values())
     return {
         "result": result,
         "metrics": {
             "enabled": metrics.get("enabled"),
-            "key_usage_total": metrics.get("key_usage_total_reported"),
+            # Estate vault count from Prom DEK gauges (not a sum of per-domain
+            # license_manager including_subdomains series — that under/over-counts).
+            "deks_total": deks_total,
+            "key_usage_estate": metrics.get("key_usage_estate"),
             "domains_with_key_usage": metrics.get("domains_with_key_usage"),
-            "deks_by_state": metrics.get("deks_by_state"),
+            "deks_by_state": deks_by_state,
             "keks_total": metrics.get("keks_total"),
             "top_domains": metrics.get("key_usage_top_domains") or [],
         }
@@ -1907,6 +2051,8 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
     info = _sec_detail(by, "system_info") or {}
     svc = _sec_detail(by, "services_status") or {}
     cluster = _sec_detail(by, "cluster") or {}
+    cluster_errs = _sec_detail(by, "cluster_errors") or {}
+    nodes = _sec_detail(by, "nodes") or {}
     ntp = _sec_detail(by, "ntp") or {}
     rot = _sec_detail(by, "rot_keys") or {}
     lic = _sec_detail(by, "licensing_licenses") or {}
@@ -1924,7 +2070,6 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
     ca_ext = _sec_detail(by, "ca_external") or {}
     ca_trust = _sec_detail(by, "ca_trusted") or {}
     orphan = _sec_detail(by, "orphaned_resources") or {}
-    capacity = _sec_detail(by, "capacity_report") or {}
     quorum = _sec_detail(by, "quorum_policies") or {}
     clients = _sec_detail(by, "registered_clients") or {}
     cte = _sec_detail(by, "cte_clients") or {}
@@ -1967,10 +2112,19 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
             "services_started": svc.get("started"),
             "services_disabled": len(svc.get("disabled") or []),
             "services_not_started": len(svc.get("not_started") or []),
-            "cluster": cluster.get("status_code") or cluster.get("status_description"),
+            "cluster": cluster.get("status_description")
+            or cluster.get("status_code"),
+            "cluster_status_code": cluster.get("status_code"),
+            "cluster_nodes": nodes.get("total")
+            if nodes.get("total") is not None
+            else nodes.get("count"),
+            "cluster_errors": cluster_errs.get("count"),
+            "cluster_error_reasons": cluster_errs.get("reasons") or [],
             "ntp_synchronized": ntp.get("ntpq_synced"),
             "disk_encryption": diskenc.get("encryptionStatus"),
             "disk_encrypted": diskenc.get("encrypted"),
+            "disk_encrypting": diskenc.get("encrypting"),
+            "disk_enc_state": diskenc.get("state"),
             "attended_boot": diskenc.get("attendedBoot"),
             "preboot_interfaces": len(diskenc.get("preboot_interfaces") or []),
             "banner_configured": banner.get("configured"),
@@ -2003,6 +2157,7 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
             "cleartext": len(iface.get("tcp_modes") or iface.get("cleartext_modes") or []),
             "mode_warn": len(iface.get("mode_warn") or []),
             "mode_preferred": len(iface.get("mode_preferred") or []),
+            "no_mutual_auth_pw": bool(iface.get("no_mutual_auth_pw")),
             "mode_web_ok": len(iface.get("mode_web_ok") or []),
             "unauth_tls": len(iface.get("unauth_tls_modes") or []),  # legacy subset
             "ssh_interfaces": len(iface.get("ssh_interfaces") or []),
@@ -2018,6 +2173,8 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
                 1 for x in (iface.get("preboot_interfaces") or []) if x.get("enabled")
             ),
             "weak_tls": len(iface.get("weak_tls") or []),
+            "web_pqc_ok": len(iface.get("web_pqc_ok") or []),
+            "web_no_pqc": len(iface.get("web_no_pqc") or iface.get("no_pqc") or []),
             "tls_certs_expired": len(iface.get("tls_certs_expired") or []),
             "tls_certs_expiring_soon": len(iface.get("tls_certs_expiring_soon") or []),
             "tls_certs_ok": len(iface.get("tls_certs_ok") or []),
@@ -2070,17 +2227,6 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
             "orphaned_keys": orphan.get("total_orphaned_keys_count"),
         }
         if orphan or _sec_result(by, "orphaned_resources")
-        else None,
-        "capacity": {
-            "result": _sec_result(by, "capacity_report"),
-            "domain_name": capacity.get("domain_name"),
-            "key_usage_this_domain": capacity.get("key_usage_count_this_domain"),
-            "key_usage_including_subdomains": capacity.get(
-                "key_usage_count_including_subdomains"
-            ),
-            "subdomain_count": capacity.get("subdomain_count_including_subdomains"),
-        }
-        if capacity or _sec_result(by, "capacity_report")
         else None,
         "quorum": {
             "result": _sec_result(by, "quorum_policies"),
@@ -2162,6 +2308,57 @@ def _summary_lines(*parts: str | None) -> str:
     return "<br>".join(bits) + ("." if bits else "")
 
 
+def _cluster_status_label(desc: str, code: str) -> str:
+    """Map CM cluster status description/code to a short English label."""
+    low = (desc or "").strip().lower()
+    c = (code or "").strip().lower()
+    aliases = {
+        "r": "ready",
+        "ready": "ready",
+        "d": "down",
+        "down": "down",
+        "nr": "not ready",
+        "not ready": "not ready",
+        "degraded": "degraded",
+        "joining": "joining",
+        "leaving": "leaving",
+    }
+    if low in aliases:
+        return aliases[low]
+    if c in aliases:
+        return aliases[c]
+    if desc and low not in ("r", "nr", "d"):
+        return desc.strip()
+    return code.strip() or desc.strip() or "unknown"
+
+
+def _cluster_summary_phrase(app: dict[str, Any]) -> str:
+    """Human cluster line for Appliance Summary (status + why when unhealthy)."""
+    desc = str(app.get("cluster") or "").strip()
+    code = str(app.get("cluster_status_code") or "").strip()
+    nodes = app.get("cluster_nodes")
+    errs = app.get("cluster_errors")
+    reasons = app.get("cluster_error_reasons") or []
+    low = desc.lower()
+    if not desc and not code:
+        return "Cluster none"
+    if low in ("none", "not clustered", "n/a") or code.lower() in ("none", "n"):
+        return "Cluster none"
+    status = _cluster_status_label(desc, code)
+    head = f"Cluster {status}"
+    if nodes is not None:
+        head += f", {nodes} node(s)"
+    err_n = int(errs) if errs is not None else 0
+    if err_n > 0:
+        why = "; ".join(str(r) for r in reasons[:3]) if reasons else None
+        if why:
+            return f"{head}: {_md_bold(why)}"
+        return f"{head}: {_md_bold(f'{err_n} node(s) reporting errors')}"
+    if errs is not None:
+        return f"{head}, 0 errors"
+    return head
+
+
 def _ca_summary_phrase(kind: str, block: dict[str, Any] | None) -> str:
     """Plain English for one CA class (local / external / trusted)."""
     if not block:
@@ -2203,10 +2400,13 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
         rows.append({"area": area, "result": r_out, "summary": summary})
 
     app = posture.get("appliance") or {}
+    disk_state = str(app.get("disk_enc_state") or "").lower()
     disk_enc = app.get("disk_encrypted")
-    if disk_enc is True:
+    if app.get("disk_encrypting") or disk_state == "encrypting":
+        disk_s = "disk encryption in progress"
+    elif disk_enc is True or disk_state == "encrypted":
         disk_s = "disk encrypted"
-    elif disk_enc is False:
+    elif disk_enc is False or disk_state == "not_encrypted":
         disk_s = _md_bold("disk not encrypted")
     else:
         disk_s = f"disk encryption status={app.get('disk_encryption')!r}"
@@ -2221,6 +2421,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     banner_ok = bool(app.get("banner_configured"))
     attended = app.get("attended_boot") is True
     preboot_n = app.get("preboot_interfaces")
+    cluster_s = _cluster_summary_phrase(app)
     add(
         "Appliance",
         app.get("result"),
@@ -2228,7 +2429,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             f"CM {app.get('version')}",
             f"Services {app.get('services_started')}/{app.get('services_total')} up"
             + (_md_bold(f" ({down_n} down)") if down_n else ""),
-            f"Cluster {app.get('cluster') or 'none'}",
+            cluster_s,
             ntp_s,
             disk_s,
             _md_bold("attended boot enabled") if attended else None,
@@ -2306,26 +2507,52 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     net = posture.get("network") or {}
     tcp_n = int(net.get("tcp_mode") or 0)
     warn_n = int(net.get("mode_warn") or 0)
+    pref_n = int(net.get("mode_preferred") or 0)
+    web_n = int(net.get("mode_web_ok") or 0)
+    web_pqc_ok = int(net.get("web_pqc_ok") or 0)
+    web_no_pqc = int(net.get("web_no_pqc") or 0)
     exp_n = int(net.get("tls_certs_expired") or 0)
     soon_n = int(net.get("tls_certs_expiring_soon") or 0)
     weak_n = int(net.get("weak_tls") or 0)
+    if web_n or web_pqc_ok or web_no_pqc:
+        if web_no_pqc:
+            web_pqc_line = _md_bold(
+                f"Web PQC not enabled ({web_no_pqc} web interface(s))"
+            )
+        elif web_pqc_ok:
+            web_pqc_line = f"Web PQC enabled ({web_pqc_ok} web interface(s))"
+        else:
+            web_pqc_line = "Web PQC status unavailable"
+    else:
+        web_pqc_line = None
     add(
         "Interfaces",
         net.get("result"),
         _summary_lines(
             f"{net.get('interfaces_total') or 0} interfaces",
             (
-                _md_bold(f"{tcp_n} TCP/no-TLS (critical)")
+                _md_bold(f"{tcp_n} TCP/no-TLS mode interface(s)")
                 if tcp_n
-                else f"{tcp_n} TCP/no-TLS (critical)"
+                else f"{tcp_n} TCP/no-TLS mode interface(s)"
             ),
             (
-                _md_bold(f"{warn_n} other TLS modes to harden (warn)")
+                _md_bold(f"{warn_n} other TLS mode interface(s) to harden")
                 if warn_n
-                else f"{warn_n} other TLS modes to harden (warn)"
+                else f"{warn_n} other TLS mode interface(s) to harden"
             ),
-            f"{net.get('mode_web_ok') or 0} web mode OK",
-            f"{net.get('mode_preferred') or 0} tls-cert-and-pw (preferred)",
+            f"{web_n} web interface(s) OK",
+            web_pqc_line,
+            (
+                _md_bold(
+                    f"{pref_n} TLS enabled interface(s) require client cert "
+                    f"(mutual auth) and password"
+                )
+                if (pref_n == 0 and (warn_n or tcp_n or net.get("no_mutual_auth_pw")))
+                else (
+                    f"{pref_n} TLS enabled interface(s) require client cert "
+                    f"(mutual auth) and password"
+                )
+            ),
             f"SSH {net.get('ssh_enabled') or 0}/{net.get('ssh_interfaces') or 0} enabled",
             f"SNMP {net.get('snmp_enabled') or 0}/{net.get('snmp_interfaces') or 0} enabled",
             f"Preboot {net.get('preboot_enabled') or 0}/{net.get('preboot_interfaces') or 0}",
@@ -2437,18 +2664,23 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     keys = posture.get("keys") or {}
     kd = keys.get("domains") or {}
     km = keys.get("metrics") or {}
-    cap = posture.get("capacity") or {}
     weak = int(kd.get("weak") or 0)
     inactive_k = int(kd.get("non_active") or 0)
     skipped = int(kd.get("skipped") or 0)
+    deks_total = km.get("deks_total")
+    if deks_total is not None:
+        estate = f"Total Keys (Including orphaned)={deks_total}"
+    elif km.get("enabled") is False:
+        estate = "Prometheus metrics disabled"
+    elif km:
+        estate = "Total Keys unavailable"
+    else:
+        estate = "Total Keys not checked"
     add(
         "Keys",
-        keys.get("result") or cap.get("result"),
+        keys.get("result"),
         _summary_lines(
-            f"Key usage in login domain '{cap.get('domain_name') or 'current'}'="
-            f"{cap.get('key_usage_this_domain')}",
-            f"Including child domains={cap.get('key_usage_including_subdomains')}",
-            f"Prometheus metrics total={km.get('key_usage_total')}",
+            estate,
             f"Domains checked={kd.get('checked')}, "
             + (
                 _md_bold(f"skipped={skipped}")
@@ -2524,8 +2756,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             "Quorum",
             quorum.get("result"),
             _summary_lines(
-                f"Quorum policies: {en} of {tot_pol} operations require approval "
-                f"(enabled)",
+                f"Quorum policies: {en} of {tot_pol} enabled",
                 f"Approval requests: {open_line}",
                 hist_line,
             ),
@@ -2909,11 +3140,29 @@ def parse_key_metrics(text: str) -> dict[str, Any]:
             except (ValueError, IndexError):
                 continue
     usage_by_domain.sort(key=lambda r: (-(r.get("keys") or 0), str(r.get("domain"))))
+    # Per-domain "including_subdomains" series must NOT be summed (double-count /
+    # miss root). Prefer root's series; else the max rollup present in the scrape.
+    key_usage_estate: int | None = None
+    if usage_by_domain:
+        rootish = next(
+            (
+                r
+                for r in usage_by_domain
+                if str(r.get("domain") or "").strip().lower() in ("root", "/", "")
+            ),
+            None,
+        )
+        if rootish is not None and rootish.get("keys") is not None:
+            key_usage_estate = int(rootish["keys"])
+        else:
+            key_usage_estate = max(int(r.get("keys") or 0) for r in usage_by_domain)
+    deks_total = sum(int(v or 0) for v in deks_by_state.values()) if deks_by_state else None
     return {
         "domains_with_key_usage": len(usage_by_domain),
-        "key_usage_total_reported": sum(r.get("keys") or 0 for r in usage_by_domain),
+        "key_usage_estate": key_usage_estate,
         "key_usage_top_domains": [r for r in usage_by_domain if (r.get("keys") or 0) > 0][:15],
         "deks_by_state": dict(deks_by_state),
+        "deks_total": deks_total,
         "keks_total": keks_total,
         "key_rotations_total": rotations,
     }
@@ -2983,24 +3232,6 @@ def check_orphaned(ctx: ReportCtx, client: CmClient) -> None:
         },
         200,
     )
-
-
-def check_capacity(ctx: ReportCtx, client: CmClient) -> None:
-    data, err = safe_get(client, "/v1/reports/capacity-report")
-    if err:
-        ctx.section("capacity_report", "WARN", {"error": str(err)}, err.status)
-        return
-    detail = {
-        "domain_name": (data or {}).get("domain_name"),
-        "key_usage_count_this_domain": (data or {}).get("key_usage_count_this_domain"),
-        "key_usage_count_including_subdomains": (data or {}).get(
-            "key_usage_count_including_subdomains"
-        ),
-        "subdomain_count_including_subdomains": (data or {}).get(
-            "subdomain_count_including_subdomains"
-        ),
-    }
-    ctx.section("capacity_report", "PASS", detail, 200)
 
 
 def check_cte(ctx: ReportCtx, client: CmClient) -> None:
@@ -3458,7 +3689,6 @@ def run(
     check_ldap(ctx, client)
     check_domains_meta(ctx, client)
     check_orphaned(ctx, client)
-    check_capacity(ctx, client)
     check_quorum(ctx, client)
     check_clients(ctx, client)
     check_audit_records(ctx, client, cm_version=cm_version)
