@@ -6,7 +6,7 @@ Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill
 
 | Skill | Purpose |
 |-------|---------|
-| `ciphertrust-healthcheck/` | Read-only health / posture for CipherTrust Manager (CM / CTM / Thales KMS / key manager) |
+| `ciphertrust-healthcheck/` | Read-only health / posture for CipherTrust Manager |
 
 ## Use in Cursor
 
