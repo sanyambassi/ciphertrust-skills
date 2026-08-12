@@ -3,6 +3,8 @@
 Optional helper if you prefer `CM_JWT` / `CM_REFRESH_TOKEN` over username/password.
 Placeholders only — never commit real hosts or tokens.
 
+Examples use `curl -sSk` (`-s` silent, `-S` show errors, `-k` skip TLS verify — same default as `CM_TLS_INSECURE`). Drop `-k` when the CM cert is trusted (or use `--cacert` with your CA).
+
 ```bash
 export CM_BASE="https://cm.example.com/api"
 export CM_USERNAME="<user>"
@@ -13,7 +15,7 @@ export CM_CONNECTION="local_account"   # optional; LDAP format: connection_name|
 ## Password grant (get `jwt` + often `refresh_token`)
 
 ```bash
-curl -sS -X POST "$CM_BASE/v1/auth/tokens/" \
+curl -sSk -X POST "$CM_BASE/v1/auth/tokens/" \
   -H "Content-Type: application/json" \
   -d "{
     \"grant_type\": \"password\",
@@ -37,7 +39,7 @@ Use one of those with `CM_BASE` and run `scripts/healthcheck.py` (or the skill).
 
 ```bash
 export CM_REFRESH_TOKEN="<refresh_token>"
-curl -sS -X POST "$CM_BASE/v1/auth/tokens/" \
+curl -sSk -X POST "$CM_BASE/v1/auth/tokens/" \
   -H "Content-Type: application/json" \
   -d "{
     \"grant_type\": \"refresh_token\",
