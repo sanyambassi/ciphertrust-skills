@@ -17,7 +17,7 @@ and each skill's `SKILL.md` for how that skill behaves at runtime.
 | Self-contained | One `SKILL.md` per folder, with its own `lib/`, `scripts/`, `references/`. No `../` imports between skills at runtime |
 | Frontmatter | `name` and `description` only; the description must say when to use the skill |
 | Naming | Folder and `name` are `ciphertrust-<skill-name>` |
-| Dependencies | Prefer the Python standard library so a skill runs without `pip install` |
+| Dependencies | Prefer the Python standard library so a skill runs without `pip install`. Optional extras (e.g. `cryptography` for cert parsing) must degrade gracefully — never hard-require a package |
 | Secrets | Never commit hosts, credentials, tokens, or `.env`. Docs use placeholders (`cm.example.com`, `ChangeMe`) |
 | Docs | Runtime behavior belongs in `SKILL.md`; setup belongs in `README.md`. Link instead of duplicating |
 

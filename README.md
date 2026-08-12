@@ -67,10 +67,14 @@ See [Build skills](https://learn.chatgpt.com/docs/build-skills), [Using skills (
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `CM_BASE` | yes | `https://<host>/api` |
-| `CM_USERNAME` + `CM_PASSWORD` | one of | Password login |
-| `CM_JWT` or `CM_REFRESH_TOKEN` | one of | Auth Token login |
+| `CM_USERNAME` + `CM_PASSWORD` | one of | Password login (needed for full per-domain key checks) |
+| `CM_JWT` | one of | Existing access token (appliance checks; per-domain keys need password or refresh) |
+| `CM_REFRESH_TOKEN` | one of | Refresh grant |
+| `CM_CONNECTION` | no | Default `local_account` |
+| `CM_DOMAIN` / `CM_AUTH_DOMAIN` | no | Omit to use CM default (typically `root`) |
 | `CM_CA_BUNDLE` | no | Private CA PEM — when set, TLS is verified with this CA |
 | `CM_TLS_INSECURE` | no | Default **on** (skip cert verify). Set `0`/`false` to verify |
+| `CM_TIMEOUT` | no | HTTP timeout seconds (default 45) |
 
 Set these at **user** or **machine/system** level (not a one-off terminal `export` / `$env:` — agents won’t see that). Restart the IDE afterward.
 

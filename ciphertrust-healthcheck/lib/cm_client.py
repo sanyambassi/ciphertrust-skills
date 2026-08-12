@@ -35,7 +35,6 @@ class CmConfig:
     connection: str = "local_account"
     domain: str | None = None
     auth_domain: str | None = None
-    auth_domain_path: str | None = None
     jwt: str | None = None
     refresh_token: str | None = None
     ca_bundle: str | None = None
@@ -54,7 +53,6 @@ class CmConfig:
             connection=os.environ.get("CM_CONNECTION") or "local_account",
             domain=os.environ.get("CM_DOMAIN") or None,
             auth_domain=os.environ.get("CM_AUTH_DOMAIN") or None,
-            auth_domain_path=os.environ.get("CM_AUTH_DOMAIN_PATH") or None,
             jwt=os.environ.get("CM_JWT") or None,
             refresh_token=os.environ.get("CM_REFRESH_TOKEN") or None,
             ca_bundle=os.environ.get("CM_CA_BUNDLE") or None,
@@ -100,9 +98,7 @@ class CmClient:
         }
         if self.config.domain:
             body["domain"] = self.config.domain
-        if self.config.auth_domain_path:
-            body["auth_domain_path"] = self.config.auth_domain_path
-        elif self.config.auth_domain:
+        if self.config.auth_domain:
             body["auth_domain"] = self.config.auth_domain
         data = self.request("POST", "/v1/auth/tokens/", body=body, auth=False)
         jwt = data.get("jwt")

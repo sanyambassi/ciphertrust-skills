@@ -55,6 +55,7 @@ Optional:
 python scripts/healthcheck.py --domain-scope self
 python scripts/healthcheck.py --keys-mode both
 python scripts/healthcheck.py --max-keys 5000
+python scripts/healthcheck.py --max-users 500
 python scripts/healthcheck.py --no-cte
 ```
 
@@ -146,6 +147,7 @@ Details: [references/checklist.md](references/checklist.md).
 ```text
 ciphertrust-healthcheck/
 ├── SKILL.md
+├── README.md
 ├── lib/cm_client.py
 ├── references/auth.md
 ├── references/checklist.md
