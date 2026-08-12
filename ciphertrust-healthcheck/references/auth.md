@@ -51,4 +51,4 @@ curl -sSk -X POST "$CM_BASE/v1/auth/tokens/" \
 export CM_JWT="<jwt from response>"
 ```
 
-Note: full per-domain key checks work best with username/password or a refresh token; a bare `CM_JWT` is enough for most appliance checks.
+Note: full per-domain key checks work best with username/password.
