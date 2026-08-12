@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -1326,9 +1327,36 @@ def check_notifications(ctx: ReportCtx, client: CmClient) -> None:
     ctx.section("notifications", result, detail, 200)
 
 
-def check_backups(ctx: ReportCtx, client: CmClient) -> None:
+def _backup_scope_counts(resources: list[Any]) -> tuple[int, int, int]:
+    """Return (total_scoped, system_count, domain_count) from backup resources."""
+    system_n = 0
+    domain_n = 0
+    other_n = 0
+    for b in resources:
+        if not isinstance(b, dict):
+            continue
+        scope = str(b.get("scope") or "").lower()
+        if scope == "system":
+            system_n += 1
+        elif scope == "domain":
+            domain_n += 1
+        else:
+            other_n += 1
+    return system_n + domain_n + other_n, system_n, domain_n
+
+
+def check_backups(
+    ctx: ReportCtx,
+    client: CmClient,
+    domain_scope: str = "all",
+) -> None:
     status, _ = safe_get(client, "/v1/backupStatus")
-    backups, berr = safe_get(client, "/v1/backups?limit=20")
+    backups = None
+    berr = None
+    try:
+        backups = client.get_paginated("/v1/backups", limit=100, max_items=500)
+    except CmError as e:
+        berr = e
     keys, kerr = safe_get(client, "/v1/backupkeys")
     jobs, jerr = safe_get(client, "/v1/scheduler/job-configs?limit=100")
 
@@ -1377,14 +1405,65 @@ def check_backups(ctx: ReportCtx, client: CmClient) -> None:
             200,
         )
 
+    by_domain: list[dict[str, Any]] = []
+    can_login = bool(
+        (client.config.username and client.config.password) or client.config.refresh_token
+    )
+    if can_login:
+        domains, _meta = resolve_domains(client, domain_scope)
+        for name in domains:
+            try:
+                dclient = client.for_domain(name)
+                page = dclient.get_paginated("/v1/backups", limit=100, max_items=500)
+                res = page.get("resources") or []
+                scoped_n, system_n, domain_n = _backup_scope_counts(res)
+                by_domain.append(
+                    {
+                        "domain": name,
+                        "total": page.get("total", scoped_n),
+                        "system_count": system_n,
+                        "domain_count": domain_n,
+                    }
+                )
+            except CmError as e:
+                if e.status in (401, 403):
+                    by_domain.append(
+                        {
+                            "domain": name,
+                            "skipped": True,
+                            "reason": "unauthorized",
+                            "status": e.status,
+                        }
+                    )
+                else:
+                    by_domain.append(
+                        {
+                            "domain": name,
+                            "error": str(e),
+                            "status": e.status,
+                        }
+                    )
+
     if berr:
         ctx.section("backups_list", "WARN", {"error": str(berr)}, berr.status)
     else:
         resources = (backups or {}).get("resources") or []
         total = (backups or {}).get("total", len(resources))
+        _, system_count, domain_count = _backup_scope_counts(resources)
+        list_detail: dict[str, Any] = {
+            "total": total,
+            "system_count": system_count,
+            "domain_count": domain_count,
+            "by_domain": by_domain or None,
+            "note": (
+                "scope=system is a full appliance backup; scope=domain is a "
+                "domain-scoped backup (optional resourceTypes). Counts above are "
+                "for the configured auth domain; by_domain is a per-domain listing."
+            ),
+        }
         if not resources:
             ctx.add("system", "backup_none", "WARNING", "No backups exist.")
-            ctx.section("backups_list", "WARN", {"total": 0}, 200)
+            ctx.section("backups_list", "WARN", list_detail, 200)
         else:
             newest = resources[0]
             created = parse_date(newest.get("createdAt"))
@@ -1409,23 +1488,27 @@ def check_backups(ctx: ReportCtx, client: CmClient) -> None:
                     "WARNING",
                     f"Newest backup is {age_days} days old (>7).",
                 )
-            ctx.section(
-                "backups_list",
-                "WARN" if (age_days and age_days > 7) or missing_key else "PASS",
+            list_detail.update(
                 {
-                    "total": total,
                     "newest_createdAt": newest.get("createdAt"),
                     "newest_age_days": age_days,
                     "sample": [
                         {
                             "id": b.get("id"),
+                            "scope": b.get("scope"),
                             "status": b.get("status"),
                             "createdAt": b.get("createdAt"),
                             "description": b.get("description"),
+                            "resourceTypes": b.get("resourceTypes"),
                         }
-                        for b in resources[:3]
+                        for b in resources[:5]
                     ],
-                },
+                }
+            )
+            ctx.section(
+                "backups_list",
+                "WARN" if (age_days and age_days > 7) or missing_key else "PASS",
+                list_detail,
                 200,
             )
 
@@ -1839,22 +1922,22 @@ def emit_user_findings(ctx: ReportCtx, domain: str | None, users: dict[str, Any]
     top = users.get("top_by_logins") or []
 
     if locked:
-        sample = _sample_join(samples, "locked")
+        names = _sample_join(samples, "locked")
         msg = f"{prefix}{locked} user account(s) are locked out"
-        if sample:
-            msg += f" (sample: {sample})"
+        if names:
+            msg += f": {names}"
         ctx.add("access", "access_users_locked", "WARNING", msg + ".")
     if never:
-        sample = _sample_join(samples, "never_logged_in")
+        names = _sample_join(samples, "never_logged_in")
         msg = f"{prefix}{never} user account(s) have never logged in (scanned set)"
-        if sample:
-            msg += f" (sample: {sample})"
+        if names:
+            msg += f": {names}"
         ctx.add("access", "access_users_never_logged_in", "WARNING", msg + ".")
     if inactive:
-        sample = _sample_join(samples, "inactive_30d")
+        names = _sample_join(samples, "inactive_30d")
         msg = f"{prefix}{inactive} user account(s) inactive >30 days (scanned set)"
-        if sample:
-            msg += f" (sample: {sample})"
+        if names:
+            msg += f": {names}"
         ctx.add("access", "access_users_inactive", "WARNING", msg + ".")
     if failed:
         ctx.add(
@@ -2198,6 +2281,9 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
         "backups": {
             "result": _sec_result(by, "backups_list") or _sec_result(by, "backup_scheduler"),
             "count": backups.get("total"),
+            "system_count": backups.get("system_count"),
+            "domain_count": backups.get("domain_count"),
+            "by_domain": backups.get("by_domain"),
             "latest_status": backup_status.get("status"),
             "schedule_enabled": backup_sched.get("enabled"),
         },
@@ -2259,6 +2345,9 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
             "result": _sec_result(by, "audit_records"),
             "skipped": bool(audit.get("skipped")),
             "reason": audit.get("reason"),
+            "source": audit.get("source"),
+            "db_store": audit.get("db_store"),
+            "db_store_note": audit.get("db_store_note"),
             "server_counts": audit.get("server_counts"),
             "client_counts": audit.get("client_counts"),
             "cm_version": audit.get("cm_version"),
@@ -2285,6 +2374,9 @@ def _cap_summary_line(s: str) -> str:
     """Ensure each Summary line starts with an uppercase letter (after ** if bold)."""
     s = s.strip()
     if not s:
+        return s
+    # Keep domain / name labels intact (e.g. "root: 6", "childdomain1: skipped").
+    if re.match(r"^[A-Za-z0-9_./-]+\s*:", s):
         return s
     if s.startswith("**") and len(s) > 2:
         # **disk not encrypted** -> **Disk not encrypted**
@@ -2588,13 +2680,44 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     )
 
     backups = posture.get("backups") or {}
+    b_total = backups.get("count") or 0
+    b_system = backups.get("system_count")
+    b_domain = backups.get("domain_count")
+    if b_system is not None or b_domain is not None:
+        backup_count_line = (
+            f"{b_total} backup(s) in configured domain "
+            f"(system={b_system or 0}, domain={b_domain or 0})"
+        )
+    else:
+        backup_count_line = f"{b_total} backup(s) in configured domain"
+    backup_domain_lines: list[str | None] = []
+    by_dom = [d for d in (backups.get("by_domain") or []) if isinstance(d, dict)]
+    if by_dom:
+        backup_domain_lines.append("Per domain:")
+        for d in by_dom[:12]:
+            name = d.get("domain") or "?"
+            if d.get("skipped"):
+                backup_domain_lines.append(
+                    f"{name}: skipped ({d.get('reason') or 'n/a'})"
+                )
+            elif d.get("error"):
+                backup_domain_lines.append(f"{name}: error")
+            else:
+                backup_domain_lines.append(
+                    f"{name}: {d.get('total') or 0} "
+                    f"(system={d.get('system_count') or 0}, "
+                    f"domain={d.get('domain_count') or 0})"
+                )
+        if len(by_dom) > 12:
+            backup_domain_lines.append(f"… +{len(by_dom) - 12} more")
     add(
         "Backups",
         backups.get("result"),
         _summary_lines(
-            f"{backups.get('count') or 0} backup(s) on record",
+            backup_count_line,
             f"Latest status={backups.get('latest_status') or 'n/a'}",
             f"{backups.get('schedule_enabled') or 0} schedule job(s) enabled",
+            *backup_domain_lines,
         ),
     )
 
@@ -2815,14 +2938,25 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             sc = audit.get("server_counts") or {}
             cc = audit.get("client_counts") or {}
             s_err = int(sc.get("error") or 0)
-            s_crit = int(sc.get("critical") or sc.get("fatal") or 0)
+            s_crit = int(sc.get("critical") or 0) + int(sc.get("fatal") or 0)
             c_err = int(cc.get("error") or 0)
-            c_fatal = int(cc.get("fatal") or cc.get("critical") or 0)
+            c_fatal = int(cc.get("fatal") or 0) + int(cc.get("critical") or 0)
+            src = str(audit.get("source") or "audit")
+            db_note = audit.get("db_store_note")
+            if src == "loki":
+                head = "Loki audit (7d)"
+            elif src == "db":
+                head = "DB audit (7d)"
+            elif src == "none":
+                head = "Audit unavailable"
+            else:
+                head = f"Audit ({src})"
             add(
                 "Audit",
                 audit.get("result"),
                 _summary_lines(
-                    "Recent DB audit (pre-2.24)",
+                    db_note,
+                    head,
                     "Server "
                     + (
                         _md_bold(f"critical/fatal={s_crit}")
@@ -2832,7 +2966,11 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
                     + ", "
                     + (_md_bold(f"error={s_err}") if s_err else f"error={s_err}"),
                     "Client "
-                    + (_md_bold(f"fatal={c_fatal}") if c_fatal else f"fatal={c_fatal}")
+                    + (
+                        _md_bold(f"critical/fatal={c_fatal}")
+                        if c_fatal
+                        else f"critical/fatal={c_fatal}"
+                    )
                     + ", "
                     + (_md_bold(f"error={c_err}") if c_err else f"error={c_err}"),
                 ),
@@ -2889,8 +3027,8 @@ def analyze_keys(ctx: ReportCtx, domain: str, keys: list[dict]) -> dict:
             "keys",
             "keys_non_active",
             "WARNING",
-            f"[{domain}] {len(non_active)} key(s) have inactive (non-Active) highest version "
-            f"(sample: {', '.join(x['name'] for x in non_active[:5])}).",
+            f"[{domain}] {len(non_active)} key(s) have inactive (non-Active) highest version: "
+            f"{', '.join(x['name'] for x in non_active[:5])}.",
         )
     if weak:
         for w in weak[:10]:
@@ -3365,49 +3503,81 @@ def check_clients(ctx: ReportCtx, client: CmClient) -> None:
     )
 
 
-def check_audit_records(
-    ctx: ReportCtx,
+def _loki_matrix_severity_counts(data: Any) -> dict[str, int]:
+    """Parse Loki matrix ``sum by (severity) (count_over_time(...))`` into counts."""
+    out: dict[str, int] = {}
+    result = ((data or {}).get("data") or {}).get("result") or []
+    if not isinstance(result, list):
+        return out
+    for series in result:
+        if not isinstance(series, dict):
+            continue
+        sev = str((series.get("metric") or {}).get("severity") or "").lower()
+        values = series.get("values") or []
+        if not sev or not values:
+            continue
+        try:
+            # step spans the full window → last bucket is the 7d count
+            out[sev] = int(float(values[-1][1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+def _loki_query_range(
     client: CmClient,
-    cm_version: Any = None,
-) -> None:
-    """DB audit record APIs were removed in CM 2.24+; skip those versions."""
-    after = (ctx.now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    at_least_224 = cm_version_at_least(cm_version, 2, 24)
+    query: str,
+    *,
+    start_ns: int,
+    end_ns: int,
+    step: str | None = "168h",
+    limit: int | None = None,
+) -> tuple[Any | None, CmError | None]:
+    params = {
+        "query": query,
+        "start": str(start_ns),
+        "end": str(end_ns),
+        "direction": "backward",
+    }
+    if step:
+        params["step"] = step
+    if limit is not None:
+        params["limit"] = str(limit)
+    path = "/v1/audit/loki/api/v1/query_range?" + urllib.parse.urlencode(params)
+    return safe_get(client, path)
 
-    if at_least_224 is True:
-        ctx.add(
-            "records",
-            "records_api_removed",
-            "INFO",
-            f"CM {cm_version}: database audit APIs removed in 2.24+; "
-            "skipping /v1/audit/records and /v1/audit/client-records "
-            "(use log forwarders / system alarms).",
-        )
-        ctx.section(
-            "audit_records",
-            "SKIP",
-            {
-                "skipped": True,
-                "reason": "db_audit_removed",
-                "since_cm": "2.24",
-                "cm_version": cm_version,
-                "alternatives": ["/v1/system/alarms", "/v1/configs/log-forwarders/"],
-            },
-            None,
-        )
-        return
 
+def _records_db_store_enabled(
+    client: CmClient, cm_version: Any
+) -> tuple[bool | None, str]:
+    """Read ENABLE_RECORDS_DB_STORE. None = property/API not available."""
+    data, err = safe_get(client, "/v1/configs/properties/ENABLE_RECORDS_DB_STORE")
+    if err:
+        if cm_version_at_least(cm_version, 2, 24) is True:
+            return None, "removed"
+        return None, f"unavailable ({err.status})"
+    raw = str((data or {}).get("value") or "").strip().lower()
+    if raw in ("true", "1", "yes", "on"):
+        return True, "enabled"
+    if raw in ("false", "0", "no", "off", ""):
+        return False, "disabled"
+    return False, f"disabled (value={raw!r})"
+
+
+def _query_db_audit_counts(
+    ctx: ReportCtx, client: CmClient, after: str
+) -> tuple[dict[str, int], dict[str, int], list[dict], list[str]]:
+    """Query legacy DB audit APIs for error/critical/fatal counts."""
     server_counts: dict[str, int] = {}
     client_counts: dict[str, int] = {}
     samples: list[dict] = []
-    server_errors: list[str] = []
-    client_errors: list[str] = []
-
+    errors: list[str] = []
     for sev in ("error", "critical", "fatal"):
-        path = f"/v1/audit/records?limit=5&severity={sev}&createdAfter={after}"
-        data, err = safe_get(client, path)
+        data, err = safe_get(
+            client, f"/v1/audit/records?limit=5&severity={sev}&createdAfter={after}"
+        )
         if err:
-            server_errors.append(f"{sev}:{err.status}")
+            errors.append(f"server:{sev}:{err.status}")
             continue
         total = int((data or {}).get("total") or 0)
         if total:
@@ -3416,95 +3586,247 @@ def check_audit_records(
                 if isinstance(r, dict) and len(samples) < 10:
                     samples.append(
                         {
-                            "source": "server",
+                            "source": "server_db",
                             "severity": r.get("severity"),
                             "message": (r.get("message") or "")[:120],
                             "createdAt": r.get("createdAt"),
                             "username": r.get("username"),
                         }
                     )
-
     for sev in ("error", "critical", "fatal"):
-        # createdAfter is not reliably honored on client-records on all versions
-        path = f"/v1/audit/client-records?limit=5&severity={sev}"
-        data, err = safe_get(client, path)
+        data, err = safe_get(client, f"/v1/audit/client-records?limit=5&severity={sev}")
         if err:
-            client_errors.append(f"{sev}:{err.status}")
+            errors.append(f"client:{sev}:{err.status}")
             continue
         total = int((data or {}).get("total") or 0)
         if total:
             client_counts[sev] = total
-            # Note: counts may include older-than-7d if API ignores time filters.
+    return server_counts, client_counts, samples, errors
 
-    # Unknown version + all GETs failed (e.g. 404) → do not fake PASS
-    if (
-        at_least_224 is None
-        and not server_counts
-        and not client_counts
-        and server_errors
-        and client_errors
-        and all(e.endswith(":404") for e in server_errors + client_errors)
+
+def _query_loki_audit_counts(
+    client: CmClient, *, start_ns: int, end_ns: int
+) -> tuple[dict[str, int], dict[str, int], list[dict], CmError | None]:
+    """Query onboard Loki for 7d severity counts + elevated samples."""
+    server_all: dict[str, int] = {}
+    client_all: dict[str, int] = {}
+    samples: list[dict] = []
+    for job, bucket in (
+        ("server_audit_records", server_all),
+        ("client_audit_records", client_all),
     ):
-        ctx.add(
-            "records",
-            "records_api_unavailable",
-            "INFO",
-            "Audit record APIs returned 404 (likely CM 2.24+ without parseable version); skipped.",
+        q = f'sum by (severity) (count_over_time({{job="{job}"}} | json [7d]))'
+        data, err = _loki_query_range(
+            client, q, start_ns=start_ns, end_ns=end_ns, step="168h"
         )
-        ctx.section(
-            "audit_records",
-            "SKIP",
-            {
-                "skipped": True,
-                "reason": "api_404",
-                "cm_version": cm_version,
-                "server_errors": server_errors,
-                "client_errors": client_errors,
-            },
-            404,
-        )
-        return
+        if err:
+            return {}, {}, [], err
+        bucket.update(_loki_matrix_severity_counts(data))
 
-    crit = sum(server_counts.get(s, 0) for s in ("critical", "fatal"))
-    err_n = server_counts.get("error", 0)
-    c_crit = sum(client_counts.get(s, 0) for s in ("critical", "fatal"))
-    c_err = client_counts.get("error", 0)
+    sample_q = '{job="server_audit_records"} | json | severity=~"error|critical|fatal"'
+    sdata, _ = _loki_query_range(
+        client, sample_q, start_ns=start_ns, end_ns=end_ns, step=None, limit=5
+    )
+    for stream in ((sdata or {}).get("data") or {}).get("result") or []:
+        if not isinstance(stream, dict):
+            continue
+        for _ts, line in stream.get("values") or []:
+            if len(samples) >= 5:
+                break
+            try:
+                obj = json.loads(line) if isinstance(line, str) else {}
+            except json.JSONDecodeError:
+                obj = {}
+            if isinstance(obj, dict):
+                samples.append(
+                    {
+                        "source": "server_loki",
+                        "severity": obj.get("severity"),
+                        "message": str(obj.get("message") or "")[:120],
+                        "createdAt": obj.get("createdAt"),
+                        "username": (obj.get("principal") or {}).get("username")
+                        if isinstance(obj.get("principal"), dict)
+                        else obj.get("username"),
+                    }
+                )
 
-    # Server records honor createdAfter → trustworthy 7d CRITICAL signal
+    server = {k: int(server_all.get(k) or 0) for k in ("error", "critical", "fatal")}
+    client = {k: int(client_all.get(k) or 0) for k in ("error", "critical", "fatal")}
+    return server, client, samples, None
+
+
+def _emit_audit_severity_findings(
+    ctx: ReportCtx,
+    *,
+    source_label: str,
+    server: dict[str, int],
+    client: dict[str, int],
+) -> tuple[int, int, int, int]:
+    crit = int(server.get("critical") or 0) + int(server.get("fatal") or 0)
+    err_n = int(server.get("error") or 0)
+    c_crit = int(client.get("critical") or 0) + int(client.get("fatal") or 0)
+    c_err = int(client.get("error") or 0)
     if crit:
         ctx.add(
             "records",
             "records_critical",
             "CRITICAL",
-            f"Server audit records (7d): critical/fatal={crit}.",
+            f"{source_label} server audit (7d): critical/fatal={crit}.",
         )
     if err_n:
         ctx.add(
             "records",
             "records_error",
             "WARNING",
-            f"Server audit records (7d): error={err_n}.",
+            f"{source_label} server audit (7d): error={err_n}.",
         )
-    # Client-records often ignore createdAfter (unbounded history on some CM versions)
     if c_crit or c_err:
         ctx.add(
             "records",
             "records_client_elevated",
             "WARNING",
-            f"Client audit records (time filter unreliable): critical/fatal={c_crit}, error={c_err}.",
+            f"{source_label} client audit (7d): critical/fatal={c_crit}, error={c_err}.",
+        )
+    return crit, err_n, c_crit, c_err
+
+
+def check_audit_records(
+    ctx: ReportCtx,
+    client: CmClient,
+    cm_version: Any = None,
+) -> None:
+    """Two audit pipelines: Loki (always on) + optional DB store.
+
+    - Read ``ENABLE_RECORDS_DB_STORE``.
+    - If DB store **enabled**: score from DB ``/v1/audit/records`` (+ client).
+    - If DB store **disabled**/removed: report that; score from Loki
+      ``/v1/audit/loki/api/v1/query_range`` (jobs ``server_audit_records`` /
+      ``client_audit_records``).
+    """
+    after = (ctx.now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_ns = int(ctx.now.timestamp() * 1_000_000_000)
+    start_ns = end_ns - 7 * 24 * 3600 * 1_000_000_000
+
+    db_on, db_status = _records_db_store_enabled(client, cm_version)
+
+    if db_on is True:
+        ctx.add(
+            "records",
+            "records_db_store_enabled",
+            "INFO",
+            "Database audit store is enabled (ENABLE_RECORDS_DB_STORE=true).",
+        )
+        server, client, samples, errors = _query_db_audit_counts(ctx, client, after)
+        if errors and not server and not client:
+            ctx.add(
+                "records",
+                "records_db_query_failed",
+                "WARNING",
+                "DB audit store is enabled but record APIs failed: "
+                + "; ".join(errors[:6])
+                + ".",
+            )
+            ctx.section(
+                "audit_records",
+                "WARN",
+                {
+                    "source": "db",
+                    "db_store": "enabled",
+                    "cm_version": cm_version,
+                    "errors": errors,
+                    "server_counts": {},
+                    "client_counts": {},
+                },
+                None,
+            )
+            return
+        crit, err_n, c_crit, c_err = _emit_audit_severity_findings(
+            ctx, source_label="DB", server=server, client=client
+        )
+        result = "FAIL" if crit else ("WARN" if (err_n or c_crit or c_err) else "PASS")
+        ctx.section(
+            "audit_records",
+            result,
+            {
+                "source": "db",
+                "db_store": "enabled",
+                "cm_version": cm_version,
+                "server_window": "7d",
+                "createdAfter": after,
+                "server_counts": server,
+                "client_counts": client,
+                "sample": samples,
+            },
+            200,
+        )
+        return
+
+    # DB store off / removed — do not treat empty DB totals as healthy audit.
+    if db_status == "removed":
+        db_note = "DB audit store not available (removed in CM 2.24+)"
+    elif db_on is False:
+        db_note = "DB audit store disabled"
+        ctx.add(
+            "records",
+            "records_db_store_disabled",
+            "INFO",
+            "Database audit store is disabled (ENABLE_RECORDS_DB_STORE=false). "
+            "Scoring uses Loki audit logs.",
+        )
+    else:
+        db_note = f"DB audit store {db_status}"
+        ctx.add(
+            "records",
+            "records_db_store_unknown",
+            "INFO",
+            f"Could not read ENABLE_RECORDS_DB_STORE ({db_status}); "
+            "scoring uses Loki when available.",
         )
 
+    server, client, samples, loki_err = _query_loki_audit_counts(
+        client, start_ns=start_ns, end_ns=end_ns
+    )
+    if loki_err is not None:
+        ctx.add(
+            "records",
+            "records_loki_unavailable",
+            "WARNING",
+            f"{db_note}; Loki audit query also unavailable ({loki_err}).",
+        )
+        ctx.section(
+            "audit_records",
+            "WARN",
+            {
+                "skipped": False,
+                "source": "none",
+                "db_store": db_status,
+                "db_store_note": db_note,
+                "loki_error": str(loki_err),
+                "cm_version": cm_version,
+                "server_counts": {},
+                "client_counts": {},
+            },
+            loki_err.status,
+        )
+        return
+
+    crit, err_n, c_crit, c_err = _emit_audit_severity_findings(
+        ctx, source_label="Loki", server=server, client=client
+    )
     result = "FAIL" if crit else ("WARN" if (err_n or c_crit or c_err) else "PASS")
     ctx.section(
         "audit_records",
         result,
         {
+            "source": "loki",
+            "db_store": db_status,
+            "db_store_note": db_note,
             "cm_version": cm_version,
             "server_window": "7d",
             "createdAfter": after,
-            "server_counts": server_counts,
-            "client_counts": client_counts,
-            "client_window_note": "createdAfter may be ignored; treat as unbounded sample",
+            "endpoint": "/v1/audit/loki/api/v1/query_range",
+            "server_counts": server,
+            "client_counts": client,
             "sample": samples,
         },
         200,
@@ -3682,7 +4004,7 @@ def run(
     check_interfaces(ctx, client)
     check_log_forwarders(ctx, client)
     check_notifications(ctx, client)
-    check_backups(ctx, client)
+    check_backups(ctx, client, domain_scope=domain_scope)
     check_alarms(ctx, client)
     check_cas(ctx, client)
     check_password_policies(ctx, client)
@@ -3777,6 +4099,26 @@ def _print_posture_header(report: dict) -> None:
             f"  (Keys detail) {d.get('domain')}: total={d.get('total')}, "
             f"weak={d.get('weak')}, inactive={d.get('non_active')}"
         )
+    backups = p.get("backups") or {}
+    for d in (backups.get("by_domain") or [])[:12]:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("domain")
+        if d.get("skipped"):
+            print(
+                f"  (Backups detail) {name}: skipped "
+                f"({d.get('reason') or 'n/a'}; status={d.get('status')})"
+            )
+        elif d.get("error"):
+            print(
+                f"  (Backups detail) {name}: error "
+                f"(status={d.get('status')}; {d.get('error')})"
+            )
+        else:
+            print(
+                f"  (Backups detail) {name}: total={d.get('total')}, "
+                f"system={d.get('system_count')}, domain={d.get('domain_count')}"
+            )
     print("=== End posture table ===")
     print()
 

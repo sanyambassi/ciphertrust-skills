@@ -27,7 +27,7 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 9. `GET /v1/system/rot-keys` — age **≥ 12 months** → CRITICAL; **≥ 6 months** → WARNING; otherwise INFO
 10. `GET /v1/system/alarms` — active unacknowledged critical/error → CRITICAL; other active → WARNING
 11. `GET /v1/notification/smtp-servers`, `/v1/notification/email-addresses`
-12. Backups: `/v1/backupStatus`, `/v1/backups`, `/v1/backupkeys`, scheduler `database_backup` jobs
+12. Backups: `/v1/backupStatus`, `/v1/backups` (per auth domain; `scope=system|domain`), `/v1/backupkeys`, scheduler `database_backup` jobs
 13. `GET /v1/system/metrics/prometheus/status` — disabled → WARNING
 
 ## Licensing
@@ -101,10 +101,17 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 
 ## Audit records
 
-Version gate: read `/v1/system/info` first. On **CM 2.24+**, database audit APIs were removed — skip `/v1/audit/records` and `/v1/audit/client-records` (`audit_records: SKIP`, INFO only). Rely on system alarms and log forwarders.
+Two pipelines: **Loki** (always on) and optional **DB store** (`ENABLE_RECORDS_DB_STORE`).
+DB store is disabled by default / removed on CM 2.24+.
 
-29. Server (pre-2.24): `/v1/audit/records` with `createdAfter` (last 7 days) — critical/fatal → CRITICAL; error → WARNING
-30. Client (pre-2.24): `/v1/audit/client-records` — elevated counts → WARNING (time filters are not always honored)
+29. `GET /v1/configs/properties/ENABLE_RECORDS_DB_STORE`
+    - `true` → score from DB `/v1/audit/records` + `/v1/audit/client-records` (7d)
+    - `false` → report **DB audit store disabled**; score from Loki
+    - missing / 2.24+ → report DB store not available; score from Loki
+30. Loki: `GET /v1/audit/loki/api/v1/query_range` (LogQL, last 7 days)
+    - Jobs: `server_audit_records`, `client_audit_records`
+    - Count: `sum by (severity) (count_over_time({job="…"} | json [7d]))` with `step=168h`
+31. Server critical/fatal → CRITICAL; server error → WARNING; client elevated → WARNING
 
 ## Overall result and exit codes
 

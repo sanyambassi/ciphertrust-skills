@@ -112,7 +112,7 @@ Details: [references/checklist.md](references/checklist.md).
 | CAs | Local, external, trusted cert expiry (same scale: expired CRITICAL; ≤30d WARNING; >30d INFO) |
 | Keys | Prometheus vault DEK totals + per-domain vault scan (weak / inactive keys) |
 | CTE | Client health, GuardPoints, Learn Mode (`--no-cte` to skip) |
-| Audit | Recent records by severity (skipped on CM 2.24+; DB audit removed) |
+| Audit | `ENABLE_RECORDS_DB_STORE`: if on → DB records; if off → note disabled + Loki `/v1/audit/loki/api/v1/query_range` |
 
 ### Keys
 
@@ -126,7 +126,7 @@ Details: [references/checklist.md](references/checklist.md).
 
 | Severity | Meaning |
 |----------|---------|
-| CRITICAL | Appliance failing or crypto floor broken (services down — not merely `disabled`, TCP mode `no-tls-*`, weak TLS minimum, expired license, expired interface TLS or CA cert, RoT key ≥ 12 months, server audit critical/fatal in last 7 days on CM before 2.24) |
+| CRITICAL | Appliance failing or crypto floor broken (services down — not merely `disabled`, TCP mode `no-tls-*`, weak TLS minimum, expired license, expired interface TLS or CA cert, RoT key ≥ 12 months, Loki/server audit critical/fatal in last 7 days) |
 | WARNING | Usable but needs attention (includes disk not encrypted, non-web interface modes other than `tls-cert-and-pw` / TCP, web without PQC TLS groups, TLS/CA certs ≤30 days left, RoT ≥ 6 months) → overall **DEGRADED** |
 | INFO | Awareness only (includes web interface modes, preferred `tls-cert-and-pw`, web PQC enabled, TLS/CA certs with >30 days left); does not change overall |
 
