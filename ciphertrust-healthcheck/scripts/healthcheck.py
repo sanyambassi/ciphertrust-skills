@@ -764,6 +764,53 @@ ROT_WARN_DAYS = 183   # >= 6 months → WARNING
 ROT_CRIT_DAYS = 365   # >= 12 months → CRITICAL
 
 
+def _age_parts(age_days: int | float | None) -> tuple[int, int, int, int] | None:
+    """Split age into (years, months, weeks, days). Uses 365d/y, 30d/mo, 7d/wk."""
+    if age_days is None:
+        return None
+    rem = max(0, int(age_days))
+    years, rem = divmod(rem, 365)
+    months, rem = divmod(rem, 30)
+    weeks, days = divmod(rem, 7)
+    return years, months, weeks, days
+
+
+def _format_age_parts(age_days: int | float | None, *, short: bool) -> str:
+    """<1y → months, weeks, days; ≥1y → years, months, weeks, days."""
+    parts = _age_parts(age_days)
+    if parts is None:
+        return "n/a" if short else "unknown age"
+    years, months, weeks, days = parts
+
+    def _u(n: int, short_u: str, long_one: str, long_many: str) -> str:
+        if short:
+            return f"{n}{short_u}"
+        return f"{n} {long_one if n == 1 else long_many}"
+
+    bits: list[str] = []
+    if years >= 1:
+        bits.append(_u(years, "y", "year", "years"))
+        bits.append(_u(months, "mo", "month", "months"))
+        bits.append(_u(weeks, "w", "week", "weeks"))
+        bits.append(_u(days, "d", "day", "days"))
+    else:
+        # Under 1 year: months, weeks, days (always all three)
+        bits.append(_u(months, "mo", "month", "months"))
+        bits.append(_u(weeks, "w", "week", "weeks"))
+        bits.append(_u(days, "d", "day", "days"))
+    return " ".join(bits) if short else ", ".join(bits)
+
+
+def _format_age_short(age_days: int | float | None) -> str:
+    """Compact age for posture."""
+    return _format_age_parts(age_days, short=True)
+
+
+def _format_age_phrase(age_days: int | float | None) -> str:
+    """Human age phrase for findings."""
+    return _format_age_parts(age_days, short=False)
+
+
 def check_rot_keys(ctx: ReportCtx, client: CmClient) -> None:
     data, err = safe_get(client, "/v1/system/rot-keys")
     if err:
@@ -781,6 +828,7 @@ def check_rot_keys(ctx: ReportCtx, client: CmClient) -> None:
             "createdAt": k.get("createdAt"),
             "age_days": age,
             "age_years": round(age / 365.0, 2) if age is not None else None,
+            "age_label": _format_age_short(age),
         }
         ages.append(row)
         if age is not None and age >= ROT_CRIT_DAYS:
@@ -788,24 +836,23 @@ def check_rot_keys(ctx: ReportCtx, client: CmClient) -> None:
                 "system",
                 "rot_key_critical_age",
                 "CRITICAL",
-                f"Root-of-Trust key '{k.get('id')}' is {age} days old "
-                f"(~{row['age_years']} years; threshold 12 months).",
+                f"Root-of-Trust key '{k.get('id')}' is {_format_age_phrase(age)} "
+                f"(threshold 12 months).",
             )
         elif age is not None and age >= ROT_WARN_DAYS:
             ctx.add(
                 "system",
                 "rot_key_old",
                 "WARNING",
-                f"Root-of-Trust key '{k.get('id')}' is {age} days old "
-                f"(~{row['age_years']} years; threshold 6 months).",
+                f"Root-of-Trust key '{k.get('id')}' is {_format_age_phrase(age)} "
+                f"(threshold 6 months).",
             )
         elif age is not None:
             ctx.add(
                 "system",
                 "rot_key_age",
                 "INFO",
-                f"Root-of-Trust key '{k.get('id')}' age is {age} days "
-                f"(~{row['age_years']} years).",
+                f"Root-of-Trust key '{k.get('id')}' age is {_format_age_phrase(age)}.",
             )
     critical_age = [a for a in ages if (a.get("age_days") or 0) >= ROT_CRIT_DAYS]
     warn_age = [
@@ -1465,7 +1512,15 @@ def check_backups(
             ctx.add("system", "backup_none", "WARNING", "No backups exist.")
             ctx.section("backups_list", "WARN", list_detail, 200)
         else:
-            newest = resources[0]
+            # CM does not guarantee /v1/backups order — pick true newest by createdAt.
+            def _backup_created(b: Any) -> datetime:
+                if not isinstance(b, dict):
+                    return datetime.min.replace(tzinfo=timezone.utc)
+                dt = parse_date(b.get("createdAt"))
+                return dt or datetime.min.replace(tzinfo=timezone.utc)
+
+            by_created = sorted(resources, key=_backup_created, reverse=True)
+            newest = by_created[0]
             created = parse_date(newest.get("createdAt"))
             age_days = (ctx.now - created).days if created else None
             missing_key = []
@@ -1486,12 +1541,16 @@ def check_backups(
                     "system",
                     "backup_stale",
                     "WARNING",
-                    f"Newest backup is {age_days} days old (>7).",
+                    f"Newest backup is {age_days} days old (>7) "
+                    f"(scope={newest.get('scope') or 'n/a'}).",
                 )
             list_detail.update(
                 {
                     "newest_createdAt": newest.get("createdAt"),
                     "newest_age_days": age_days,
+                    "newest_scope": newest.get("scope"),
+                    "newest_status": newest.get("status"),
+                    "newest_id": newest.get("id"),
                     "sample": [
                         {
                             "id": b.get("id"),
@@ -1501,7 +1560,7 @@ def check_backups(
                             "description": b.get("description"),
                             "resourceTypes": b.get("resourceTypes"),
                         }
-                        for b in resources[:5]
+                        for b in by_created[:5]
                     ],
                 }
             )
@@ -1925,19 +1984,19 @@ def emit_user_findings(ctx: ReportCtx, domain: str | None, users: dict[str, Any]
         names = _sample_join(samples, "locked")
         msg = f"{prefix}{locked} user account(s) are locked out"
         if names:
-            msg += f": {names}"
+            msg += f" - Usernames: {names}"
         ctx.add("access", "access_users_locked", "WARNING", msg + ".")
     if never:
         names = _sample_join(samples, "never_logged_in")
-        msg = f"{prefix}{never} user account(s) have never logged in (scanned set)"
+        msg = f"{prefix}{never} user account(s) have never logged in"
         if names:
-            msg += f": {names}"
+            msg += f" - Usernames: {names}"
         ctx.add("access", "access_users_never_logged_in", "WARNING", msg + ".")
     if inactive:
         names = _sample_join(samples, "inactive_30d")
-        msg = f"{prefix}{inactive} user account(s) inactive >30 days (scanned set)"
+        msg = f"{prefix}{inactive} user account(s) inactive >30 days"
         if names:
-            msg += f": {names}"
+            msg += f" - Usernames: {names}"
         ctx.add("access", "access_users_inactive", "WARNING", msg + ".")
     if failed:
         ctx.add(
@@ -2194,7 +2253,17 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
             "services_total": svc.get("total"),
             "services_started": svc.get("started"),
             "services_disabled": len(svc.get("disabled") or []),
+            "services_disabled_names": [
+                str(d.get("name"))
+                for d in (svc.get("disabled") or [])
+                if isinstance(d, dict) and d.get("name")
+            ],
             "services_not_started": len(svc.get("not_started") or []),
+            "services_not_started_names": [
+                str(d.get("name"))
+                for d in (svc.get("not_started") or [])
+                if isinstance(d, dict) and d.get("name")
+            ],
             "cluster": cluster.get("status_description")
             or cluster.get("status_code"),
             "cluster_status_code": cluster.get("status_code"),
@@ -2503,6 +2572,12 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     else:
         disk_s = f"disk encryption status={app.get('disk_encryption')!r}"
     down_n = int(app.get("services_not_started") or 0)
+    disabled_names = [
+        str(n) for n in (app.get("services_disabled_names") or []) if n
+    ]
+    down_names = [
+        str(n) for n in (app.get("services_not_started_names") or []) if n
+    ]
     ntp_sync = app.get("ntp_synchronized")
     if ntp_sync is True:
         ntp_s = "NTP synchronized"
@@ -2514,13 +2589,29 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     attended = app.get("attended_boot") is True
     preboot_n = app.get("preboot_interfaces")
     cluster_s = _cluster_summary_phrase(app)
+    svc_disabled_line = None
+    if disabled_names:
+        shown = ", ".join(disabled_names[:20])
+        if len(disabled_names) > 20:
+            shown += f" … +{len(disabled_names) - 20} more"
+        svc_disabled_line = f"Disabled: {shown}"
+    svc_down_line = None
+    if down_n:
+        if down_names:
+            shown = ", ".join(down_names[:20])
+            if len(down_names) > 20:
+                shown += f" … +{len(down_names) - 20} more"
+            svc_down_line = _md_bold(f"Down: {shown}")
+        else:
+            svc_down_line = _md_bold(f"{down_n} service(s) down")
     add(
         "Appliance",
         app.get("result"),
         _summary_lines(
             f"CM {app.get('version')}",
-            f"Services {app.get('services_started')}/{app.get('services_total')} up"
-            + (_md_bold(f" ({down_n} down)") if down_n else ""),
+            f"Services {app.get('services_started')}/{app.get('services_total')} up",
+            svc_disabled_line,
+            svc_down_line,
             cluster_s,
             ntp_s,
             disk_s,
@@ -2537,7 +2628,10 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     ages = []
     for k in rot_keys[:5]:
         if isinstance(k, dict) and k.get("id") is not None:
-            ages.append(f"{k.get('id')} ~{k.get('age_years')}y")
+            label = k.get("age_label") or _format_age_short(k.get("age_days"))
+            if label == "n/a" and k.get("age_years") is not None:
+                label = f"~{k.get('age_years')}y"
+            ages.append(f"{k.get('id')} {label}")
     rot_bits = []
     if rot.get("older_than_12m"):
         rot_bits.append(
