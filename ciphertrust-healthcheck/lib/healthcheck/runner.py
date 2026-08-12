@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any
 
 from cm_client import CmClient, CmError
@@ -34,6 +35,7 @@ from .checks.inventory import (
 from .checks.ops import check_alarms, check_backups, check_licensing
 from .context import ReportCtx
 from .domains import build_domain_walk, check_domains_meta
+from .html_report import write_html_report
 from .posture import build_posture_table, collect_posture_summary
 from .report import print_human, score
 from .users import check_users_access
@@ -213,7 +215,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip CTE client/policy/guardpoint checks",
     )
+    parser.add_argument(
+        "--html",
+        metavar="PATH",
+        help="Write a tabbed HTML report with per-area charts (open in a browser; print to PDF)",
+    )
+    parser.add_argument(
+        "--html-from",
+        metavar="JSON",
+        help="Rebuild HTML from a saved report JSON (no CM calls)",
+    )
     args = parser.parse_args(argv)
+    if args.html_from:
+        report = json.loads(Path(args.html_from).read_text(encoding="utf-8"))
+        html_path = write_html_report(report, args.html or "healthcheck-report.html")
+        print(f"HTML report: {html_path}")
+        return 0
     report = run(
         domain_scope=args.domain_scope,
         keys_mode=args.keys_mode,
@@ -221,6 +238,19 @@ def main(argv: list[str] | None = None) -> int:
         max_users=args.max_users,
         include_cte=not args.no_cte,
     )
+    if args.html:
+        html_path = write_html_report(report, args.html)
+        print(f"HTML report: {html_path}")
+        cache = Path(__file__).resolve().parents[2] / "reports" / "last-report.json"
+        try:
+            from .html_report import _redact
+
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(
+                json.dumps(_redact(report), indent=2, default=str), encoding="utf-8"
+            )
+        except OSError:
+            pass
     if args.json:
         print(json.dumps(report, indent=2, default=str))
     else:

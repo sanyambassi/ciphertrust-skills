@@ -319,8 +319,6 @@ def parse_key_metrics(text: str) -> dict[str, Any]:
             except (ValueError, IndexError):
                 continue
     usage_by_domain.sort(key=lambda r: (-(r.get("keys") or 0), str(r.get("domain"))))
-    # Per-domain "including_subdomains" series must NOT be summed (double-count /
-    # miss root). Prefer root's series; else the max rollup present in the scrape.
     key_usage_estate: int | None = None
     if usage_by_domain:
         rootish = next(

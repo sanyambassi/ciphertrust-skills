@@ -149,8 +149,7 @@ def print_human(report: dict) -> None:
         print()
 
     for s in report.get("sections", []):
-        mark = {"PASS": "OK", "FAIL": "!!", "WARN": "~~"}.get(s["result"], s["result"])
-        print(f"[{mark}] {s['name']} (HTTP {s.get('status')})")
+        print(f"[{s['result']}] {s['name']} (HTTP {s.get('status')})")
         detail = s.get("detail")
         if s.get("name") == "keys_domains" and isinstance(detail, dict):
             print(

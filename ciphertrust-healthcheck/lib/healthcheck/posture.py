@@ -130,8 +130,6 @@ def collect_keys_summary(sections: list[dict]) -> dict[str, Any]:
         "result": result,
         "metrics": {
             "enabled": metrics.get("enabled"),
-            # Estate vault count from Prom DEK gauges (not a sum of per-domain
-            # license_manager including_subdomains series — that under/over-counts).
             "deks_total": deks_total,
             "key_usage_estate": metrics.get("key_usage_estate"),
             "domains_with_key_usage": metrics.get("domains_with_key_usage"),
@@ -417,14 +415,22 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
     }
 
 
-def _md_bold(text: str, when: bool = True) -> str:
-    """Wrap in markdown bold when ``when`` is true (agents render Summary as MD)."""
+def _md_bold(text: str, when: bool = True, *, sev: str = "warn") -> str:
+    """Wrap facts that drive WARN/FAIL. ``sev`` is warn or fail (HTML color)."""
     if not when or text is None:
         return "" if text is None else str(text)
     s = str(text)
-    if not s or (s.startswith("**") and s.endswith("**")):
+    if not s:
         return s
-    return f"**{s}**"
+    if (s.startswith("***") and s.endswith("***")) or (
+        s.startswith("**") and s.endswith("**")
+    ):
+        return s
+    if sev == "fail":
+        return f"***{s}***"
+    if sev == "warn":
+        return f"**{s}**"
+    return s
 
 
 def _cap_summary_line(s: str) -> str:
@@ -435,8 +441,15 @@ def _cap_summary_line(s: str) -> str:
     # Keep domain / name labels intact (e.g. "root: 6", "childdomain1: skipped").
     if re.match(r"^[A-Za-z0-9_./-]+\s*:", s):
         return s
+    if s.startswith("***") and len(s) > 3:
+        inner = s[3:]
+        end = ""
+        if inner.endswith("***"):
+            inner, end = inner[:-3], "***"
+        if inner:
+            inner = inner[0].upper() + inner[1:]
+        return f"***{inner}{end}"
     if s.startswith("**") and len(s) > 2:
-        # **disk not encrypted** -> **Disk not encrypted**
         inner = s[2:]
         end = ""
         if inner.endswith("**"):
@@ -501,8 +514,8 @@ def _cluster_summary_phrase(app: dict[str, Any]) -> str:
     if err_n > 0:
         why = "; ".join(str(r) for r in reasons[:3]) if reasons else None
         if why:
-            return f"{head}: {_md_bold(why)}"
-        return f"{head}: {_md_bold(f'{err_n} node(s) reporting errors')}"
+            return f"{head}: {_md_bold(why, sev='fail')}"
+        return f"{head}: {_md_bold(f'{err_n} node(s) reporting errors', sev='fail')}"
     if errs is not None:
         return f"{head}, 0 errors"
     return head
@@ -520,7 +533,7 @@ def _ca_summary_phrase(kind: str, block: dict[str, Any] | None) -> str:
         return f"{kind}: none configured"
     bits = []
     if expired:
-        bits.append(_md_bold(f"{expired} expired"))
+        bits.append(_md_bold(f"{expired} expired", sev="fail"))
     if soon:
         bits.append(_md_bold(f"{soon} expire within 30 days"))
     if ok:
@@ -534,8 +547,9 @@ def _ca_summary_phrase(kind: str, block: dict[str, Any] | None) -> str:
 def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     """Area / Result / Summary rows in plain English for agents to copy.
 
-    Summary uses markdown ``**bold**`` on facts that drive WARN/FAIL so chat
-    tables can emphasize them. Agents must preserve the asterisks.
+    Summary uses ``***fail***`` / ``**warn**`` on facts that drive those
+    results so chat tables stay emphasized and HTML can color them.
+    Agents must preserve the asterisks. INFO facts are not wrapped.
     """
     rows: list[dict[str, str]] = []
 
@@ -589,9 +603,9 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             shown = ", ".join(down_names[:20])
             if len(down_names) > 20:
                 shown += f" … +{len(down_names) - 20} more"
-            svc_down_line = _md_bold(f"Down: {shown}")
+            svc_down_line = _md_bold(f"Down: {shown}", sev="fail")
         else:
-            svc_down_line = _md_bold(f"{down_n} service(s) down")
+            svc_down_line = _md_bold(f"{down_n} service(s) down", sev="fail")
     add(
         "Appliance",
         app.get("result"),
@@ -623,7 +637,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     rot_bits = []
     if rot.get("older_than_12m"):
         rot_bits.append(
-            _md_bold(f"{rot.get('older_than_12m')} key(s) >=12 months (critical)")
+            _md_bold(f"{rot.get('older_than_12m')} key(s) >=12 months (critical)", sev="fail")
         )
     if rot.get("older_than_6m"):
         rot_bits.append(
@@ -643,7 +657,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     lic = posture.get("licensing") or {}
     lic_bits = [f"{lic.get('active') or 0} active licenses"]
     if lic.get("expired"):
-        lic_bits.append(_md_bold(f"{lic.get('expired')} expired"))
+        lic_bits.append(_md_bold(f"{lic.get('expired')} expired", sev="fail"))
     if lic.get("expiring_soon"):
         lic_bits.append(
             _md_bold(f"{lic.get('expiring_soon')} expire within 30 days")
@@ -670,7 +684,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             )
             + f" (of {alarms.get('total') or 0} listed)",
             (
-                _md_bold(f"{crit_a} critical/error severity")
+                _md_bold(f"{crit_a} critical/error severity", sev="fail")
                 if crit_a
                 else f"{crit_a} critical/error severity"
             ),
@@ -714,7 +728,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
         _summary_lines(
             f"{net.get('interfaces_total') or 0} interfaces",
             (
-                _md_bold(f"{tcp_n} TCP/no-TLS mode interface(s)")
+                _md_bold(f"{tcp_n} TCP/no-TLS mode interface(s)", sev="fail")
                 if tcp_n
                 else f"{tcp_n} TCP/no-TLS mode interface(s)"
             ),
@@ -740,7 +754,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             f"SNMP {net.get('snmp_enabled') or 0}/{net.get('snmp_interfaces') or 0} enabled",
             f"Preboot {net.get('preboot_enabled') or 0}/{net.get('preboot_interfaces') or 0}",
             "TLS certs: "
-            + (_md_bold(f"{exp_n} expired") if exp_n else f"{exp_n} expired")
+            + (_md_bold(f"{exp_n} expired", sev="fail") if exp_n else f"{exp_n} expired")
             + ", "
             + (
                 _md_bold(f"{soon_n} expire within 30 days")
@@ -748,7 +762,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
                 else f"{soon_n} expire within 30 days"
             )
             + f", {net.get('tls_certs_ok') or 0} ok",
-            _md_bold(f"{weak_n} weak TLS minimum") if weak_n else None,
+            _md_bold(f"{weak_n} weak TLS minimum", sev="fail") if weak_n else None,
             f"{net.get('log_forwarders_active') or 0} active log forwarder(s)",
             f"{net.get('smtp_servers') or 0} SMTP server(s)",
         ),
@@ -764,11 +778,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
     ca_checked = certs.get("domains_checked")
     ca_skipped = certs.get("domains_skipped")
     if ca_checked is not None or ca_skipped is not None:
-        skip_bit = (
-            _md_bold(f"skipped={ca_skipped or 0}")
-            if (ca_skipped or 0) > 0
-            else f"skipped={ca_skipped or 0}"
-        )
+        skip_bit = f"skipped={ca_skipped or 0}"
         ca_domain_lines.append(
             f"Domains checked={ca_checked or 0}, {skip_bit}"
         )
@@ -800,10 +810,10 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
                 ext_exp = int(ext.get("expired") or 0)
                 loc_s = f"local={loc_n if loc_n is not None else '?'}"
                 if loc_exp:
-                    loc_s += f" ({_md_bold(f'{loc_exp} expired')})"
+                    loc_s += f" ({_md_bold(f'{loc_exp} expired', sev='fail')})"
                 ext_s = f"external={ext_n if ext_n is not None else '?'}"
                 if ext_exp:
-                    ext_s += f" ({_md_bold(f'{ext_exp} expired')})"
+                    ext_s += f" ({_md_bold(f'{ext_exp} expired', sev='fail')})"
                 ca_domain_lines.append(f"{name}: {loc_s}, {ext_s}")
         if len(ca_by_dom) > 12:
             ca_domain_lines.append(f"… +{len(ca_by_dom) - 12} more")
@@ -892,7 +902,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             ),
             f"{ldap.get('total') or 0} LDAP connection(s)",
             (
-                _md_bold(f"{insecure} with insecure TLS skip-verify")
+                _md_bold(f"{insecure} with insecure TLS skip-verify", sev="fail")
                 if insecure
                 else f"{insecure} with insecure TLS skip-verify"
             ),
@@ -950,12 +960,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
         keys.get("result"),
         _summary_lines(
             estate,
-            f"Domains checked={kd.get('checked')}, "
-            + (
-                _md_bold(f"skipped={skipped}")
-                if skipped
-                else f"skipped={skipped}"
-            ),
+            f"Domains checked={kd.get('checked')}, skipped={skipped}",
             (
                 _md_bold(f"weak keys in scanned domains={weak}")
                 if weak
@@ -1000,17 +1005,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
             if n:
                 closed_bits.append(f"{st}={n}")
         if open_n:
-            open_line = (
-                _md_bold(f"{act} waiting for approval (active)")
-                if act
-                else f"{act} waiting for approval (active)"
-            )
-            open_line += ", "
-            open_line += (
-                _md_bold(f"{pre} pre-active")
-                if pre
-                else f"{pre} pre-active"
-            )
+            open_line = f"{act} waiting for approval (active), {pre} pre-active"
         else:
             open_line = "none waiting for approval"
         hist_line = None
@@ -1052,9 +1047,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
                 f"{cte.get('clients_total') or 0} CTE client(s)",
                 _md_bold(f"{disc} disconnected") if disc else f"{disc} disconnected",
                 (
-                    _md_bold(f"{unreg} unregistered/offline")
-                    if unreg
-                    else f"{unreg} unregistered/offline"
+                    f"{unreg} unregistered/offline"
                 ),
                 (
                     _md_bold(f"{gp} GuardPoint(s) not active")
@@ -1105,7 +1098,7 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
                     head,
                     "Server "
                     + (
-                        _md_bold(f"critical/fatal={s_crit}")
+                        _md_bold(f"critical/fatal={s_crit}", sev="fail")
                         if s_crit
                         else f"critical/fatal={s_crit}"
                     )

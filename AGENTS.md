@@ -9,6 +9,7 @@ and each skill's `SKILL.md` for how that skill behaves at runtime.
 | Path | Purpose |
 |------|---------|
 | `ciphertrust-healthcheck/` | Read-only CipherTrust Manager health / posture skill |
+| `ciphertrust-key-inventory/` | Read-only CipherTrust Manager key inventory skill |
 
 ## Skill structure
 
@@ -30,4 +31,5 @@ and each skill's `SKILL.md` for how that skill behaves at runtime.
 ## Before committing a change to a runner script
 
 - `python -m py_compile ciphertrust-healthcheck/scripts/healthcheck.py ciphertrust-healthcheck/lib/cm_client.py`
-- Smoke test against a real appliance with `CM_*` set, then confirm scoring and output still match `SKILL.md` and `references/checklist.md`.
+- `python -m py_compile ciphertrust-key-inventory/scripts/inventory.py ciphertrust-key-inventory/lib/cm_client.py`
+- Smoke test against a real appliance with `CM_*` set, then confirm output still matches that skill’s `SKILL.md`.

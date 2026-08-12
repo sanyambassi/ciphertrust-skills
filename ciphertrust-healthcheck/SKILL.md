@@ -35,7 +35,7 @@ unless the user clearly means something else).
 | `CM_CONNECTION` | no | Default `local_account` |
 | `CM_DOMAIN` / `CM_AUTH_DOMAIN` | no | Omit to use CM default (typically `root`) |
 | `CM_CA_BUNDLE` | no | TLS CA file — when set, verify with this CA |
-| `CM_TLS_INSECURE` | no | Default on (skip cert verify / `verify=False`). Set `0`/`false` to verify |
+| `CM_TLS_INSECURE` | no | Default on (skip cert verify). Set `0`/`false` to verify |
 | `CM_TIMEOUT` | no | HTTP timeout seconds (default 45) |
 
 Optional: mint a JWT/refresh token with curl — [references/auth.md](references/auth.md).
@@ -47,6 +47,7 @@ From this skill folder:
 ```bash
 python scripts/healthcheck.py
 python scripts/healthcheck.py --json
+python scripts/healthcheck.py --html healthcheck-report.html
 ```
 
 Optional:
@@ -59,14 +60,14 @@ python scripts/healthcheck.py --max-users 500
 python scripts/healthcheck.py --no-cte
 ```
 
-Do not re-implement the check with ad-hoc HTTP calls. The script uses `lib/cm_client.py` in this folder.
+`--html PATH` writes a tabbed HTML report. Open in a browser. Still present the chat posture table.
 
 ## Procedure
 
 1. Confirm `CM_*` is available to the process. On Windows, if Process is empty, check User then Machine (`[Environment]::GetEnvironmentVariable(name,'User'|'Machine')`) and, if found, copy into the process (`$env:NAME=...`) before running the script — or ask the user to set User/Machine vars and restart the IDE. Do not guess credentials.
-2. Reachability: **do not** GET bare `CM_BASE` (e.g. `https://host/api`) — that often returns **404** and proves nothing useful. Prefer running the healthcheck script (it authenticates and calls real APIs). If you must preflight separately: obtain a token, then `GET $CM_BASE/v1/system/info` — **200** = reachable; connection/TLS/timeout errors = unreachable. Never treat a 404 on `/api` as success or failure of CM health.
-3. Run the script above (prefer default human output; `--json` only if you need `posture`).
-4. Present results using **How to present** below — do not invent a free-form summary.
+2. Do not GET bare `CM_BASE`. Run the healthcheck script.
+3. Run the script. If the user asks for HTML or PDF, pass `--html <path>.html`.
+4. Present results using **How to present** below. If HTML was written, give the file path after the findings lists.
 5. Do not remediate unless the user explicitly asks and confirms.
 
 ## How to present
@@ -93,7 +94,7 @@ Rules for **Summary** / **Result**:
 - Non-PASS **Result** cells are also bold (`**WARN**` / `**FAIL**`).
 - Do not rename the third column back to “Highlights”.
 
-**3. Keys caveat** (one line under the table): always say **domains checked** vs **domains skipped**; general vault sample is ≤ `--max-keys` per domain (inactive/state). Weak-key hunt also uses `keys2` filters (`algorithm` / `size` / `curveid`) so it is not limited to that sample alone. Domains skipped ≠ clean estate.
+**3. Keys caveat** (one line under the table): **domains checked** vs **domains skipped**. Skipped ≠ no keys in that domain.
 
 **4. Findings** — two short lists (bullets): **CRITICAL** then **WARNING** (all of them, or “none”). INFO only if it explains a SKIP.
 
@@ -116,11 +117,8 @@ Details: [references/checklist.md](references/checklist.md).
 
 ### Keys
 
-- Estate key count: Prometheus vault **DEK** totals when enabled (never the scrape token).
-  Do not sum per-domain license `including_subdomains` series — that under/over-counts.
-- Per domain (for weak/inactive keys + user hygiene): login with token `domain` parameter,
-  page `/v1/vault/keys2/` (≤ `--max-keys`) and users (top 5 by `logins_count`, up to `--max-users`).
-  Weak keys: also query `keys2` with `algorithm` / repeated `size` / `curveid` filters.
+- Estate key count: Prometheus vault DEK totals when enabled. Never print the scrape token.
+- Per domain: login with token `domain` parameter, page `/v1/vault/keys2/` and users.
 - Domain 401/403: skip and report that the domain could not be checked.
 
 ## Scoring
@@ -152,26 +150,27 @@ ciphertrust-healthcheck/
 ├── lib/
 │   ├── cm_client.py
 │   └── healthcheck/
-│       ├── __init__.py          # exports run, main, score
-│       ├── context.py           # Finding, ReportCtx
-│       ├── util.py              # dates, certs, safe_get, summaries
-│       ├── modes.py             # interface mode labels, TLS/PQC constants
-│       ├── domains.py           # resolve_domains, shared domain walk
-│       ├── users.py             # user hygiene helpers
-│       ├── keys.py              # weak key logic, metrics parsing
-│       ├── posture.py           # posture table builder
-│       ├── report.py            # score, print_human
-│       ├── runner.py            # run(), main()
+│       ├── __init__.py
+│       ├── context.py
+│       ├── util.py
+│       ├── modes.py
+│       ├── domains.py
+│       ├── users.py
+│       ├── keys.py
+│       ├── posture.py
+│       ├── report.py
+│       ├── html_report.py
+│       ├── runner.py
 │       └── checks/
-│           ├── appliance.py     # services, cluster, NTP, diskenc, RoT
-│           ├── interfaces.py    # interfaces, log forwarders, notifications
-│           ├── ops.py           # licensing, backups, alarms
-│           ├── cas.py           # CA checks
-│           ├── access.py        # password policies, LDAP
-│           ├── inventory.py     # keys, metrics, orphaned, clients, quorum
-│           ├── cte.py           # CTE
-│           └── audit.py         # audit records / Loki
+│           ├── appliance.py
+│           ├── interfaces.py
+│           ├── ops.py
+│           ├── cas.py
+│           ├── access.py
+│           ├── inventory.py
+│           ├── cte.py
+│           └── audit.py
 ├── references/auth.md
 ├── references/checklist.md
-└── scripts/healthcheck.py       # thin entrypoint → healthcheck.runner.main
+└── scripts/healthcheck.py
 ```
