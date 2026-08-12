@@ -1,4 +1,4 @@
-# Mint a JWT or refresh token
+# Create a JWT or refresh token
 
 Optional helper if you prefer `CM_JWT` / `CM_REFRESH_TOKEN` over username/password.
 Placeholders only — never commit real hosts or tokens.
