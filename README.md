@@ -98,4 +98,4 @@ To add a skill: create `ciphertrust-<name>/` with its own `SKILL.md` and local `
 
 ## License
 
-See [LICENSE](LICENSE).
+[MIT](LICENSE).
