@@ -149,8 +149,29 @@ Details: [references/checklist.md](references/checklist.md).
 ciphertrust-healthcheck/
 ├── SKILL.md
 ├── README.md
-├── lib/cm_client.py
+├── lib/
+│   ├── cm_client.py
+│   └── healthcheck/
+│       ├── __init__.py          # exports run, main, score
+│       ├── context.py           # Finding, ReportCtx
+│       ├── util.py              # dates, certs, safe_get, summaries
+│       ├── modes.py             # interface mode labels, TLS/PQC constants
+│       ├── domains.py           # resolve_domains, shared domain walk
+│       ├── users.py             # user hygiene helpers
+│       ├── keys.py              # weak key logic, metrics parsing
+│       ├── posture.py           # posture table builder
+│       ├── report.py            # score, print_human
+│       ├── runner.py            # run(), main()
+│       └── checks/
+│           ├── appliance.py     # services, cluster, NTP, diskenc, RoT
+│           ├── interfaces.py    # interfaces, log forwarders, notifications
+│           ├── ops.py           # licensing, backups, alarms
+│           ├── cas.py           # CA checks
+│           ├── access.py        # password policies, LDAP
+│           ├── inventory.py     # keys, metrics, orphaned, clients, quorum
+│           ├── cte.py           # CTE
+│           └── audit.py         # audit records / Loki
 ├── references/auth.md
 ├── references/checklist.md
-└── scripts/healthcheck.py
+└── scripts/healthcheck.py       # thin entrypoint → healthcheck.runner.main
 ```
