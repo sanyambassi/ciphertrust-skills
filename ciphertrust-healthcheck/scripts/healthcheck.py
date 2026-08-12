@@ -657,9 +657,11 @@ def check_diskenc(ctx: ReportCtx, client: CmClient) -> None:
     status = (data or {}).get("encryptionStatus")
 
     preboot: list[dict[str, Any]] = []
-    idata, ierr = safe_get(client, "/v1/configs/interfaces/")
-    if not ierr:
-        for i in (idata or {}).get("resources") or []:
+    try:
+        idata = client.get_paginated(
+            "/v1/configs/interfaces/", limit=100, max_items=500
+        )
+        for i in idata.get("resources") or []:
             if not isinstance(i, dict):
                 continue
             itype = str(i.get("interface_type") or "").strip().lower()
@@ -674,6 +676,8 @@ def check_diskenc(ctx: ReportCtx, client: CmClient) -> None:
                         "network_interface": i.get("network_interface"),
                     }
                 )
+    except CmError:
+        pass
 
     detail = {
         "encryptionStatus": status,
@@ -995,11 +999,15 @@ def check_licensing(ctx: ReportCtx, client: CmClient) -> None:
 
 
 def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
-    data, err = safe_get(client, "/v1/configs/interfaces/")
-    if err:
+    # Default CM page is limit=10; always paginate so web/etc. are not dropped.
+    try:
+        data = client.get_paginated(
+            "/v1/configs/interfaces/", limit=100, max_items=500
+        )
+    except CmError as err:
         ctx.section("interfaces", "FAIL", {"error": str(err)}, err.status)
         return
-    resources = (data or {}).get("resources") or []
+    resources = data.get("resources") or []
     tcp_mode: list[dict] = []
     mode_warn: list[dict] = []
     mode_preferred: list[dict] = []  # tls-cert-and-pw only
@@ -1069,8 +1077,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
         if not enabled:
             disabled.append(name)
             if itype not in ("ssh", "snmp", "preboot"):
-                ctx.add(
-                    "network",
+                ctx.add("interfaces",
                     "net_interface_disabled",
                     "INFO",
                     f"Service interface '{name}' is DISABLED (often intentional).",
@@ -1085,8 +1092,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
             }
             if sev == "CRITICAL":
                 tcp_mode.append(entry)
-                ctx.add(
-                    "network",
+                ctx.add("interfaces",
                     "net_interface_tcp_mode",
                     "CRITICAL",
                     f"Service interface '{name}' uses TCP mode (no TLS): {label} "
@@ -1094,8 +1100,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                 )
             elif sev == "WARNING":
                 mode_warn.append(entry)
-                ctx.add(
-                    "network",
+                ctx.add("interfaces",
                     "net_interface_mode_warn",
                     "WARNING",
                     f"Service interface '{name}' mode is not tls-cert-and-pw: "
@@ -1104,8 +1109,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
             elif sev == "INFO":
                 if itype == "web":
                     mode_web_ok.append(entry)
-                    ctx.add(
-                        "network",
+                    ctx.add("interfaces",
                         "net_interface_mode_web_ok",
                         "INFO",
                         f"Web interface '{name}' mode OK (platform-supported): "
@@ -1113,8 +1117,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                     )
                 else:
                     mode_preferred.append(entry)
-                    ctx.add(
-                        "network",
+                    ctx.add("interfaces",
                         "net_interface_mode_preferred",
                         "INFO",
                         f"Service interface '{name}' uses preferred mode: {label} "
@@ -1122,8 +1125,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                     )
         if enabled and tls in WEAK_TLS:
             weak_tls.append({"name": name, "minimum_tls_version": tls})
-            ctx.add(
-                "network",
+            ctx.add("interfaces",
                 "net_interface_weak_tls",
                 "CRITICAL",
                 f"Service interface '{name}' has weak minimum TLS '{tls}'.",
@@ -1141,8 +1143,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                         pqc.append(g.get("group_name"))
             if pqc:
                 web_pqc_ok.append({"name": name, "groups": pqc[:8]})
-                ctx.add(
-                    "network",
+                ctx.add("interfaces",
                     "net_web_pqc_enabled",
                     "INFO",
                     f"Web interface '{name}' has PQC TLS key-exchange enabled: "
@@ -1150,8 +1151,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                 )
             else:
                 no_pqc.append(name)
-                ctx.add(
-                    "network",
+                ctx.add("interfaces",
                     "net_web_no_pqc",
                     "WARNING",
                     f"Web interface '{name}' has no PQC TLS key-exchange group "
@@ -1181,7 +1181,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
             row = {"name": name, "notAfter": na_s, "days_left": dleft}
             sev = emit_cert_validity(
                 ctx,
-                area="network",
+                area="interfaces",
                 code_prefix="net_iface_cert",
                 label=f"Interface '{name}' TLS certificate",
                 days_left=dleft,
@@ -1198,8 +1198,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
 
     def _mgmt_iface_summary(kind: str, items: list[dict]) -> None:
         if not items:
-            ctx.add(
-                "network",
+            ctx.add("interfaces",
                 f"net_{kind}_not_configured",
                 "INFO",
                 f"No {kind.upper()} interfaces are configured.",
@@ -1227,7 +1226,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
         if len(items) > 20:
             msg += f"; … +{len(items) - 20} more"
         msg += "."
-        ctx.add("network", f"net_{kind}_configured", "INFO", msg)
+        ctx.add("interfaces", f"net_{kind}_configured", "INFO", msg)
 
     _mgmt_iface_summary("ssh", ssh_ifaces)
     _mgmt_iface_summary("snmp", snmp_ifaces)
@@ -1235,8 +1234,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
     service_auth_modes = len(tcp_mode) + len(mode_warn) + len(mode_preferred)
     no_mutual_auth_pw = bool(service_auth_modes and not mode_preferred)
     if no_mutual_auth_pw:
-        ctx.add(
-            "network",
+        ctx.add("interfaces",
             "net_no_tls_cert_and_pw",
             "WARNING",
             "No TLS-enabled service interface requires client cert (mutual auth) "
@@ -1254,8 +1252,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
                 bit += f", mode {x.get('mode')}"
             bit += ")"
             parts.append(bit)
-        ctx.add(
-            "network",
+        ctx.add("interfaces",
             "net_preboot_configured",
             "INFO",
             f"Preboot configured: {len(preboot_ifaces)} (enabled={len(en)}) — "
@@ -1278,7 +1275,7 @@ def check_interfaces(ctx: ReportCtx, client: CmClient) -> None:
         "interfaces",
         result,
         {
-            "total": len(resources),
+            "total": data.get("total", len(resources)),
             "enabled": sum(1 for r in rows if r.get("enabled")),
             "disabled": disabled,
             "tcp_modes": tcp_mode,
@@ -1317,8 +1314,7 @@ def check_log_forwarders(ctx: ReportCtx, client: CmClient) -> None:
     resources = (data or {}).get("resources") or []
     active = [r for r in resources if isinstance(r, dict) and not r.get("disabled")]
     if not active:
-        ctx.add(
-            "network",
+        ctx.add("interfaces",
             "net_no_active_log_forwarders",
             "WARNING",
             "No active external log forwarders are configured.",
@@ -1600,58 +1596,139 @@ def check_backups(
         )
 
 
+def _alarms_total(client: CmClient, **filters: Any) -> int | None:
+    """Return alarms list ``total`` for the given filters (limit=1)."""
+    parts = [f"{urllib.parse.quote(str(k))}={urllib.parse.quote(str(v))}" for k, v in filters.items()]
+    q = "&".join(parts + ["limit=1"])
+    data, err = safe_get(client, f"/v1/system/alarms?{q}")
+    if err or not isinstance(data, dict):
+        return None
+    try:
+        return int(data.get("total") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def check_alarms(ctx: ReportCtx, client: CmClient) -> None:
-    data, err = safe_get(client, "/v1/system/alarms?limit=100")
-    if err:
-        ctx.section("alarms", "FAIL", {"error": str(err)}, err.status)
-        return
-    resources = (data or {}).get("resources") or []
-    active = [
-        a
-        for a in resources
-        if isinstance(a, dict)
-        and str(a.get("state") or "").lower() == "on"
-        and a.get("acknowledgedAt") is None
-    ]
-    by_name = Counter(str(a.get("name") or "unnamed") for a in active)
-    crit = []
-    warn = []
-    for a in active:
-        sev = str(a.get("severity") or "").lower()
-        row = {
-            "name": a.get("name"),
-            "severity": a.get("severity"),
-            "description": (a.get("description") or "")[:160],
-        }
-        if sev in ALARM_CRITICAL_SEVS:
-            crit.append(row)
-        else:
-            warn.append(row)
-    if crit:
+    """Alarm posture using API filters for exact totals (not sample-list lengths)."""
+    estate_total = _alarms_total(client)  # all states
+    active_count = _alarms_total(client, state="on")
+    # Severity breakdown among active (state=on)
+    active_warning = _alarms_total(client, state="on", severity="warning")
+    active_info = _alarms_total(client, state="on", severity="info")
+    active_critical = _alarms_total(client, state="on", severity="critical")
+    active_error = _alarms_total(client, state="on", severity="error")
+    # Other elevated severities CM may use
+    active_alert = _alarms_total(client, state="on", severity="alert")
+    active_emergency = _alarms_total(client, state="on", severity="emergency")
+
+    if active_count is None:
+        # Fallback: first unfiltered page (may undercount)
+        data, err = safe_get(client, "/v1/system/alarms?limit=100")
+        if err:
+            ctx.section("alarms", "FAIL", {"error": str(err)}, err.status)
+            return
+        resources = (data or {}).get("resources") or []
+        active = [
+            a
+            for a in resources
+            if isinstance(a, dict) and str(a.get("state") or "").lower() == "on"
+        ]
+        active_count = len(active)
+        estate_total = (data or {}).get("total", estate_total)
+        active_critical = sum(
+            1
+            for a in active
+            if str(a.get("severity") or "").lower() in ALARM_CRITICAL_SEVS
+        )
+        active_warning = sum(
+            1 for a in active if str(a.get("severity") or "").lower() == "warning"
+        )
+        active_info = sum(
+            1 for a in active if str(a.get("severity") or "").lower() == "info"
+        )
+        active_error = sum(
+            1 for a in active if str(a.get("severity") or "").lower() == "error"
+        )
+        ctx.add(
+            "system",
+            "alarms_filter_fallback",
+            "INFO",
+            "Could not filter alarms by state/severity; counts may be undercounted.",
+        )
+
+    crit_n = sum(
+        int(x or 0)
+        for x in (active_critical, active_error, active_alert, active_emergency)
+    )
+    warn_n = int(active_warning or 0)
+    info_n = int(active_info or 0)
+    active_n = int(active_count or 0)
+
+    # Samples for report detail (not used as counts)
+    crit_sample: list[dict] = []
+    warn_sample: list[dict] = []
+    by_name: Counter = Counter()
+    try:
+        page = client.get_paginated(
+            "/v1/system/alarms?state=on", limit=100, max_items=500
+        )
+        for a in page.get("resources") or []:
+            if not isinstance(a, dict):
+                continue
+            by_name[str(a.get("name") or "unnamed")] += 1
+            sev = str(a.get("severity") or "").lower()
+            row = {
+                "name": a.get("name"),
+                "severity": a.get("severity"),
+                "description": (a.get("description") or "")[:160],
+            }
+            if sev in ALARM_CRITICAL_SEVS and len(crit_sample) < 10:
+                crit_sample.append(row)
+            elif sev == "warning" and len(warn_sample) < 10:
+                warn_sample.append(row)
+    except CmError:
+        pass
+
+    if crit_n:
         ctx.add(
             "system",
             "alarms_critical",
             "CRITICAL",
-            f"{len(crit)} active critical/error alarm(s).",
+            f"{crit_n} active critical/error alarm(s) (among {active_n} active).",
         )
-    elif active:
+    elif active_n:
         ctx.add(
             "system",
             "alarms_active",
             "WARNING",
-            f"{len(active)} active unacknowledged alarm(s).",
+            f"{active_n} active alarm(s) (state=on).",
         )
-    result = "FAIL" if crit else ("WARN" if active else "PASS")
+    result = "FAIL" if crit_n else ("WARN" if active_n else "PASS")
     ctx.section(
         "alarms",
         result,
         {
-            "total": (data or {}).get("total"),
-            "returned": len(resources),
-            "active_unacknowledged": len(active),
-            "active_by_name": dict(by_name.most_common(10)),
-            "critical_sample": crit[:10],
-            "warning_sample": warn[:10],
+            "total": estate_total,
+            "active_unacknowledged": active_n,
+            "active_by_severity": {
+                "warning": warn_n,
+                "info": info_n,
+                "critical": int(active_critical or 0),
+                "error": int(active_error or 0),
+                "alert": int(active_alert or 0),
+                "emergency": int(active_emergency or 0),
+            },
+            "active_critical": crit_n,
+            "active_warning": warn_n,
+            "active_info": info_n,
+            "active_by_name": dict(by_name.most_common(15)),
+            "critical_sample": crit_sample,
+            "warning_sample": warn_sample,
+            "note": (
+                "Counts from API filters (state=on, severity=…). "
+                "Samples are examples only; estate total includes on/off/unknown."
+            ),
         },
         200,
     )
@@ -1660,8 +1737,11 @@ def check_alarms(ctx: ReportCtx, client: CmClient) -> None:
 def _interface_referenced_ca_ids(client: CmClient) -> set[str]:
     """CA ids/uris referenced by enabled interfaces (auto_gen + trusted_cas)."""
     refs: set[str] = set()
-    data, err = safe_get(client, "/v1/configs/interfaces/")
-    if err or not isinstance(data, dict):
+    try:
+        data = client.get_paginated(
+            "/v1/configs/interfaces/", limit=100, max_items=500
+        )
+    except CmError:
         return refs
     for i in data.get("resources") or []:
         if not isinstance(i, dict) or not i.get("enabled"):
@@ -1692,108 +1772,237 @@ def _ca_is_referenced(ca: dict, refs: set[str]) -> bool:
     return False
 
 
-def check_cas(ctx: ReportCtx, client: CmClient) -> None:
-    """CA cert validity: expired CRITICAL; ≤30d WARNING; >30d INFO."""
-    refs = _interface_referenced_ca_ids(client)
-    for kind, path in (
-        ("local", "/v1/ca/local-cas?limit=100"),
-        ("external", "/v1/ca/external-cas?limit=100"),
-    ):
-        data, err = safe_get(client, path)
-        if err:
-            ctx.section(f"ca_{kind}", "WARN", {"error": str(err)}, err.status)
+def _score_domain_cas(
+    ctx: ReportCtx,
+    *,
+    domain: str,
+    kind: str,
+    resources: list[Any],
+    refs: set[str],
+) -> dict[str, Any]:
+    """Score one domain's local or external CA list; emit findings with [domain]."""
+    expired: list[dict] = []
+    expiring: list[dict] = []
+    ok: list[dict] = []
+    for ca in resources:
+        if not isinstance(ca, dict):
             continue
-        resources = (data or {}).get("resources") or []
-        expired: list[dict] = []
-        expiring: list[dict] = []
-        ok: list[dict] = []
-        for ca in resources:
-            if not isinstance(ca, dict):
-                continue
-            name = ca.get("name") or ca.get("id")
-            state = str(ca.get("state") or "").lower()
-            after = parse_date(ca.get("notAfter"))
-            dleft = days_until(after, ctx.now)
-            if state == "expired" and dleft is None:
-                dleft = -1
-            in_use = _ca_is_referenced(ca, refs)
-            row = {
-                "name": name,
-                "state": ca.get("state"),
-                "notAfter": ca.get("notAfter"),
-                "days_left": dleft,
-                "referenced_by_interface": in_use,
-            }
-            label = f"{kind.title()} CA '{name}'"
-            if in_use:
-                label += " (referenced by enabled interface)"
-            sev = emit_cert_validity(
-                ctx,
-                area="ca",
-                code_prefix=f"ca_{kind}",
-                label=label,
-                days_left=dleft,
-                not_after=str(ca.get("notAfter") or "")[:32] or None,
+        name = ca.get("name") or ca.get("id")
+        state = str(ca.get("state") or "").lower()
+        after = parse_date(ca.get("notAfter"))
+        dleft = days_until(after, ctx.now)
+        if state == "expired" and dleft is None:
+            dleft = -1
+        in_use = _ca_is_referenced(ca, refs)
+        row = {
+            "domain": domain,
+            "name": name,
+            "state": ca.get("state"),
+            "notAfter": ca.get("notAfter"),
+            "days_left": dleft,
+            "referenced_by_interface": in_use,
+        }
+        label = f"[{domain}] {kind.title()} CA '{name}'"
+        if in_use:
+            label += " (referenced by enabled interface)"
+        sev = emit_cert_validity(
+            ctx,
+            area="ca",
+            code_prefix=f"ca_{kind}",
+            label=label,
+            days_left=dleft,
+            not_after=str(ca.get("notAfter") or "")[:32] or None,
+        )
+        if sev == "CRITICAL":
+            expired.append(row)
+        elif sev == "WARNING":
+            expiring.append(row)
+        elif sev == "INFO":
+            ok.append(row)
+    return {
+        "total": len(resources),
+        "expired": expired,
+        "expiring_soon": expiring,
+        "ok": ok,
+    }
+
+
+def _check_trusted_cas(ctx: ReportCtx, client: CmClient) -> None:
+    """Trusted CAs are appliance-scoped; subdomains often return 403."""
+    trusted, err = safe_get(client, "/v1/trusted-cas/?limit=100")
+    if err:
+        if err.status in (401, 403):
+            ctx.section(
+                "ca_trusted",
+                "PASS",
+                {
+                    "total": 0,
+                    "expired": [],
+                    "expiring_soon": [],
+                    "ok": [],
+                    "skipped": True,
+                    "reason": "unauthorized",
+                    "status": err.status,
+                    "note": "Trusted CAs require appliance/root privileges; skipped.",
+                },
+                err.status,
             )
-            if sev == "CRITICAL":
-                expired.append(row)
-            elif sev == "WARNING":
-                expiring.append(row)
-            elif sev == "INFO":
-                ok.append(row)
+            return
+        ctx.section("ca_trusted", "WARN", {"error": str(err)}, err.status)
+        return
+    resources = (trusted or {}).get("resources") or []
+    expired: list[dict] = []
+    expiring: list[dict] = []
+    ok: list[dict] = []
+    for ca in resources:
+        if not isinstance(ca, dict):
+            continue
+        details = ca.get("ca_details") if isinstance(ca.get("ca_details"), dict) else ca
+        name = ca.get("name") or details.get("name") or ca.get("id")
+        after = parse_date(details.get("notAfter") or ca.get("notAfter"))
+        dleft = days_until(after, ctx.now)
+        na = details.get("notAfter") or ca.get("notAfter")
+        row = {"name": name, "days_left": dleft, "notAfter": na}
+        sev = emit_cert_validity(
+            ctx,
+            area="ca",
+            code_prefix="ca_trusted",
+            label=f"Trusted CA '{name}'",
+            days_left=dleft,
+            not_after=str(na)[:32] if na else None,
+        )
+        if sev == "CRITICAL":
+            expired.append(row)
+        elif sev == "WARNING":
+            expiring.append(row)
+        elif sev == "INFO":
+            ok.append(row)
+    ctx.section(
+        "ca_trusted",
+        "FAIL" if expired else ("WARN" if expiring else "PASS"),
+        {
+            "total": (trusted or {}).get("total", len(resources)),
+            "expired": expired,
+            "expiring_soon": expiring,
+            "ok": ok[:20],
+        },
+        200,
+    )
+
+
+def check_cas(
+    ctx: ReportCtx, client: CmClient, domain_scope: str = "all"
+) -> None:
+    """Local/external CAs are domain-scoped — scan each reachable domain.
+
+    Trusted CAs are checked once on the auth client (appliance/root); subdomain
+    tokens often get 403 for ``/v1/trusted-cas``.
+    """
+    refs = _interface_referenced_ca_ids(client)
+    _check_trusted_cas(ctx, client)
+
+    can_login = bool(
+        (client.config.username and client.config.password) or client.config.refresh_token
+    )
+    if can_login:
+        domains, _meta = resolve_domains(client, domain_scope)
+    else:
+        # JWT-only: current token domain only
+        cur = client.config.domain or "current"
+        domains = [cur]
+
+    by_domain: list[dict[str, Any]] = []
+    agg: dict[str, dict[str, list]] = {
+        "local": {"expired": [], "expiring_soon": [], "ok": []},
+        "external": {"expired": [], "expiring_soon": [], "ok": []},
+    }
+    totals = {"local": 0, "external": 0}
+    checked = 0
+    skipped = 0
+
+    for name in domains:
+        try:
+            dclient = client.for_domain(name) if can_login else client
+            row: dict[str, Any] = {"domain": name}
+            for kind, path in (
+                ("local", "/v1/ca/local-cas?limit=100"),
+                ("external", "/v1/ca/external-cas?limit=100"),
+            ):
+                data, err = safe_get(dclient, path)
+                if err:
+                    row[kind] = {
+                        "error": str(err),
+                        "status": err.status,
+                    }
+                    continue
+                resources = (data or {}).get("resources") or []
+                scored = _score_domain_cas(
+                    ctx,
+                    domain=name,
+                    kind=kind,
+                    resources=resources,
+                    refs=refs,
+                )
+                api_total = (data or {}).get("total", scored["total"])
+                totals[kind] += int(api_total or 0)
+                for bucket in ("expired", "expiring_soon", "ok"):
+                    agg[kind][bucket].extend(scored[bucket])
+                row[kind] = {
+                    "total": api_total,
+                    "expired": len(scored["expired"]),
+                    "expiring_soon": len(scored["expiring_soon"]),
+                    "ok": len(scored["ok"]),
+                }
+            by_domain.append(row)
+            checked += 1
+        except CmError as e:
+            if e.status in (401, 403):
+                by_domain.append(
+                    {
+                        "domain": name,
+                        "skipped": True,
+                        "reason": "unauthorized",
+                        "status": e.status,
+                    }
+                )
+                skipped += 1
+            else:
+                by_domain.append(
+                    {
+                        "domain": name,
+                        "error": str(e),
+                        "status": e.status,
+                    }
+                )
+                skipped += 1
+
+    note = (
+        "Local/external CAs are per-domain. Totals sum domains checked; "
+        f"skipped={skipped} (unauthorized does not mean clean). "
+        "Trusted CAs are appliance-scoped."
+    )
+    for kind in ("local", "external"):
+        expired = agg[kind]["expired"]
+        expiring = agg[kind]["expiring_soon"]
+        ok = agg[kind]["ok"]
         result = "FAIL" if expired else ("WARN" if expiring else "PASS")
+        if not checked and skipped:
+            result = "WARN"
         ctx.section(
             f"ca_{kind}",
             result,
             {
-                "total": (data or {}).get("total", len(resources)),
+                "total": totals[kind],
+                "domains_checked": checked,
+                "domains_skipped": skipped,
                 "expired": expired,
-                "expired_in_use": [r for r in expired if r.get("referenced_by_interface")],
+                "expired_in_use": [
+                    r for r in expired if r.get("referenced_by_interface")
+                ],
                 "expiring_soon": expiring,
                 "ok": ok[:20],
-            },
-            200,
-        )
-
-    trusted, err = safe_get(client, "/v1/trusted-cas/?limit=100")
-    if err:
-        ctx.section("ca_trusted", "WARN", {"error": str(err)}, err.status)
-    else:
-        resources = (trusted or {}).get("resources") or []
-        expired = []
-        expiring = []
-        ok = []
-        for ca in resources:
-            if not isinstance(ca, dict):
-                continue
-            details = ca.get("ca_details") if isinstance(ca.get("ca_details"), dict) else ca
-            name = ca.get("name") or details.get("name") or ca.get("id")
-            after = parse_date(details.get("notAfter") or ca.get("notAfter"))
-            dleft = days_until(after, ctx.now)
-            na = details.get("notAfter") or ca.get("notAfter")
-            row = {"name": name, "days_left": dleft, "notAfter": na}
-            sev = emit_cert_validity(
-                ctx,
-                area="ca",
-                code_prefix="ca_trusted",
-                label=f"Trusted CA '{name}'",
-                days_left=dleft,
-                not_after=str(na)[:32] if na else None,
-            )
-            if sev == "CRITICAL":
-                expired.append(row)
-            elif sev == "WARNING":
-                expiring.append(row)
-            elif sev == "INFO":
-                ok.append(row)
-        ctx.section(
-            "ca_trusted",
-            "FAIL" if expired else ("WARN" if expiring else "PASS"),
-            {
-                "total": (trusted or {}).get("total", len(resources)),
-                "expired": expired,
-                "expiring_soon": expiring,
-                "ok": ok[:20],
+                "by_domain": by_domain,
+                "note": note,
             },
             200,
         )
@@ -2299,8 +2508,14 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
             "result": _sec_result(by, "alarms"),
             "total": alarms.get("total"),
             "active_unacknowledged": alarms.get("active_unacknowledged"),
-            "critical_active": len(alarms.get("critical_sample") or []),
-            "warning_active": len(alarms.get("warning_sample") or []),
+            "critical_active": alarms.get("active_critical")
+            if alarms.get("active_critical") is not None
+            else len(alarms.get("critical_sample") or []),
+            "warning_active": alarms.get("active_warning")
+            if alarms.get("active_warning") is not None
+            else len(alarms.get("warning_sample") or []),
+            "info_active": alarms.get("active_info"),
+            "active_by_severity": alarms.get("active_by_severity"),
         },
         "network": {
             "result": _sec_result(by, "interfaces"),
@@ -2343,9 +2558,14 @@ def collect_posture_summary(sections: list[dict]) -> dict[str, Any]:
                 "expired": len(ca_trust.get("expired") or []),
                 "expiring_soon": len(ca_trust.get("expiring_soon") or []),
                 "ok": len(ca_trust.get("ok") or []),
+                "skipped": ca_trust.get("skipped"),
+                "reason": ca_trust.get("reason"),
             }
             if ca_trust or _sec_result(by, "ca_trusted")
             else None,
+            "domains_checked": ca_local.get("domains_checked"),
+            "domains_skipped": ca_local.get("domains_skipped"),
+            "by_domain": ca_local.get("by_domain") or ca_ext.get("by_domain"),
         },
         "backups": {
             "result": _sec_result(by, "backups_list") or _sec_result(by, "backup_scheduler"),
@@ -2676,17 +2896,26 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
         alarms.get("result"),
         _summary_lines(
             (
-                _md_bold(f"{au} active unacknowledged")
+                _md_bold(f"{au} active (state=on)")
                 if au
-                else f"{au} active unacknowledged"
+                else f"{au} active (state=on)"
             )
             + f" (of {alarms.get('total') or 0} listed)",
             (
-                _md_bold(f"{crit_a} critical-severity among them")
+                _md_bold(f"{crit_a} critical/error severity")
                 if crit_a
-                else f"{crit_a} critical-severity among them"
+                else f"{crit_a} critical/error severity"
             ),
-            f"{alarms.get('warning_active') or 0} warning-severity samples",
+            (
+                _md_bold(f"{alarms.get('warning_active') or 0} warning severity")
+                if alarms.get("warning_active")
+                else f"{alarms.get('warning_active') or 0} warning severity"
+            ),
+            (
+                f"{alarms.get('info_active')} info severity"
+                if alarms.get("info_active") is not None
+                else None
+            ),
         ),
     )
 
@@ -2763,13 +2992,68 @@ def build_posture_table(posture: dict[str, Any]) -> list[dict[str, str]]:
         (certs.get("external") or {}).get("result"),
         (certs.get("trusted") or {}).get("result"),
     )
+    ca_domain_lines: list[str | None] = []
+    ca_checked = certs.get("domains_checked")
+    ca_skipped = certs.get("domains_skipped")
+    if ca_checked is not None or ca_skipped is not None:
+        skip_bit = (
+            _md_bold(f"skipped={ca_skipped or 0}")
+            if (ca_skipped or 0) > 0
+            else f"skipped={ca_skipped or 0}"
+        )
+        ca_domain_lines.append(
+            f"Domains checked={ca_checked or 0}, {skip_bit}"
+        )
+    ca_by_dom = [d for d in (certs.get("by_domain") or []) if isinstance(d, dict)]
+    if ca_by_dom:
+        # Prefer reachable domains in the short posture sample.
+        ca_by_dom = sorted(
+            ca_by_dom,
+            key=lambda d: (
+                1 if d.get("skipped") or d.get("error") else 0,
+                str(d.get("domain") or ""),
+            ),
+        )
+        ca_domain_lines.append("Per domain:")
+        for d in ca_by_dom[:12]:
+            name = d.get("domain") or "?"
+            if d.get("skipped"):
+                ca_domain_lines.append(
+                    f"{name}: skipped ({d.get('reason') or 'n/a'})"
+                )
+            elif d.get("error"):
+                ca_domain_lines.append(f"{name}: error")
+            else:
+                loc = d.get("local") if isinstance(d.get("local"), dict) else {}
+                ext = d.get("external") if isinstance(d.get("external"), dict) else {}
+                loc_n = loc.get("total")
+                ext_n = ext.get("total")
+                loc_exp = int(loc.get("expired") or 0)
+                ext_exp = int(ext.get("expired") or 0)
+                loc_s = f"local={loc_n if loc_n is not None else '?'}"
+                if loc_exp:
+                    loc_s += f" ({_md_bold(f'{loc_exp} expired')})"
+                ext_s = f"external={ext_n if ext_n is not None else '?'}"
+                if ext_exp:
+                    ext_s += f" ({_md_bold(f'{ext_exp} expired')})"
+                ca_domain_lines.append(f"{name}: {loc_s}, {ext_s}")
+        if len(ca_by_dom) > 12:
+            ca_domain_lines.append(f"… +{len(ca_by_dom) - 12} more")
+    trusted_block = certs.get("trusted")
+    if isinstance(trusted_block, dict) and trusted_block.get("skipped"):
+        trusted_phrase = (
+            f"Trusted CAs: skipped ({trusted_block.get('reason') or 'n/a'})"
+        )
+    else:
+        trusted_phrase = _ca_summary_phrase("Trusted CAs", trusted_block)
     add(
         "CAs",
         ca_result,
         _summary_lines(
             _ca_summary_phrase("Local CAs", certs.get("local")),
             _ca_summary_phrase("External CAs", certs.get("external")),
-            _ca_summary_phrase("Trusted CAs", certs.get("trusted")),
+            trusted_phrase,
+            *ca_domain_lines,
         ),
     )
 
@@ -3102,7 +3386,187 @@ def collapse_key_versions(keys: list[dict]) -> dict[str, dict]:
     return out
 
 
-def analyze_keys(ctx: ReportCtx, domain: str, keys: list[dict]) -> dict:
+def _key_curve(k: dict[str, Any]) -> str:
+    for field in ("curveId", "curveName", "curve", "ellipticCurve", "curve_id"):
+        v = k.get(field)
+        if v:
+            return str(v)
+    return ""
+
+
+# CM keys2 algorithm= filter is case-sensitive (RSA works; rsa returns 0).
+_WEAK_DES_ALGS = frozenset(
+    {"DES", "DESEDE", "3DES", "TDES", "TRIPLEDES", "TDEA", "TDEA2", "TDEA3"}
+)
+# Undersized AES/ARIA: every 8-bit step below 128 (imports / odd sizes).
+_UNDERSIZED_SYM_SIZES = tuple(range(8, 128, 8))
+# CM-supported + common legacy weak EC curve IDs (docs Supported Key Algorithms).
+_WEAK_EC_CURVE_IDS = (
+    "secp224r1",
+    "secp224k1",
+    "secp192r1",
+    "secp192k1",
+    "secp160r1",
+    "secp160k1",
+    "secp160r2",
+    "secp128r1",
+    "secp128r2",
+    "secp112r1",
+    "secp112r2",
+    "brainpoolP224r1",
+    "brainpoolP224t1",
+    "brainpoolP192r1",
+    "brainpoolP192t1",
+    "brainpoolP160r1",
+    "brainpoolP160t1",
+    "prime192v1",
+    "sect163k1",
+    "sect163r1",
+    "sect163r2",
+    "sect193r1",
+    "sect193r2",
+    "sect233k1",
+    "sect233r1",
+)
+_WEAK_EC_CURVE_TOKENS = (
+    "secp224",
+    "secp192",
+    "secp160",
+    "secp128",
+    "secp112",
+    "brainpoolp224",
+    "brainpoolp192",
+    "brainpoolp160",
+    "prime192",
+    "sect163",
+    "sect193",
+    "sect233",
+)
+
+
+def _is_weak_key(k: dict[str, Any]) -> tuple[bool, str]:
+    """Weak per CM supported-algo tables + NIST-style floor.
+
+    - RSA size < 2048 (docs deprecate RSA-512/1024)
+    - Any DES / DESede / 3DES / TDES
+    - AES or ARIA size < 128
+    - EC with size < 256 or ~224-bit (and smaller) curves
+    """
+    alg = str(k.get("algorithm") or "").strip()
+    alg_u = alg.upper().replace("-", "").replace("_", "")
+    try:
+        size = int(k.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    curve = _key_curve(k)
+    curve_l = curve.lower()
+
+    if alg_u in _WEAK_DES_ALGS or alg_u.startswith("DESEDE"):
+        detail = f"{alg} (legacy/deprecated)"
+        if size:
+            detail = f"{alg} ({size} bits; legacy/deprecated)"
+        return True, detail
+
+    if alg_u == "RSA" and size and size < 2048:
+        return True, f"{alg} ({size} bits)"
+
+    if alg_u in ("AES", "ARIA") and size and size < 128:
+        return True, f"{alg} ({size} bits)"
+
+    if alg_u in ("EC", "ECDSA", "ECC"):
+        # <256-bit ≈ below modern 128-bit security floor (aligns with RSA < 2048).
+        weak_ec = bool(size and size < 256)
+        if not weak_ec and curve_l:
+            weak_ec = any(tok in curve_l for tok in _WEAK_EC_CURVE_TOKENS) or bool(
+                re.search(r"(?<![0-9])(112|128|160|192|224)(?![0-9])", curve_l)
+            )
+        if weak_ec:
+            if size and curve:
+                return True, f"{alg} ({size} bits, {curve})"
+            if size:
+                return True, f"{alg} ({size} bits)"
+            if curve:
+                return True, f"{alg} ({curve})"
+            return True, f"{alg} (undersized curve)"
+
+    return False, ""
+
+
+def _keys2_filter_path(**params: Any) -> str:
+    """Build /v1/vault/keys2/ query; list values become repeated params (OR)."""
+    parts: list[str] = []
+    for key, val in params.items():
+        if val is None:
+            continue
+        if isinstance(val, (list, tuple)):
+            for item in val:
+                parts.append(
+                    f"{urllib.parse.quote(str(key))}={urllib.parse.quote(str(item))}"
+                )
+        else:
+            parts.append(
+                f"{urllib.parse.quote(str(key))}={urllib.parse.quote(str(val))}"
+            )
+    return "/v1/vault/keys2/?" + "&".join(parts) if parts else "/v1/vault/keys2/"
+
+
+def fetch_weak_key_candidates(client: CmClient, *, max_items: int = 5000) -> list[dict]:
+    """Server-side filters for likely-weak keys (avoids full-vault --max-keys cap).
+
+    Strategy (algorithm filter is case-sensitive on CM):
+    - Pull **all** RSA / DES-family / ARIA / EC (usually small sets), then classify.
+    - AES vaults are huge → only request sizes &lt; 128.
+    - Also query weak ``curveid`` values and RSA sizes 512/1024 as a belt-and-suspenders.
+    """
+    queries = [
+        # Full algo pulls (canonical case) — classify client-side for size/curve rules
+        _keys2_filter_path(algorithm="RSA"),
+        _keys2_filter_path(algorithm="DESede"),
+        _keys2_filter_path(algorithm="DES"),
+        _keys2_filter_path(algorithm="3DES"),
+        _keys2_filter_path(algorithm="TDES"),
+        _keys2_filter_path(algorithm="*DES*"),
+        _keys2_filter_path(algorithm="ARIA"),
+        _keys2_filter_path(algorithm="EC"),
+        _keys2_filter_path(algorithm="ECDSA"),
+        # RSA weak sizes (docs: 512/1024 deprecated); catch even if alg filter fails
+        _keys2_filter_path(algorithm="RSA", size=[512, 768, 1024, 1536, 1792]),
+        _keys2_filter_path(size=[512, 768, 1024]),
+        # Undersized AES/ARIA (every supported-odd size below 128)
+        _keys2_filter_path(algorithm="AES", size=list(_UNDERSIZED_SYM_SIZES)),
+        _keys2_filter_path(algorithm="ARIA", size=list(_UNDERSIZED_SYM_SIZES)),
+        # DESede key sizes from docs (112/168) + parity forms (128/192) with alg set
+        _keys2_filter_path(algorithm="DESede", size=[112, 128, 168, 192]),
+        _keys2_filter_path(algorithm="TDES", size=[112, 128, 168, 192]),
+        # EC weak sizes + CM-documented / legacy weak curves
+        _keys2_filter_path(
+            algorithm="EC", size=[112, 128, 160, 192, 224, 225, 233, 239]
+        ),
+        _keys2_filter_path(curveid=list(_WEAK_EC_CURVE_IDS)),
+    ]
+    by_id: dict[str, dict] = {}
+    for path in queries:
+        try:
+            page = client.get_paginated(path, limit=100, max_items=max_items)
+        except CmError:
+            continue
+        for k in page.get("resources") or []:
+            if not isinstance(k, dict):
+                continue
+            kid = str(k.get("id") or k.get("uri") or "")
+            if not kid:
+                kid = f"{k.get('name')}|{k.get('version')}|{k.get('algorithm')}|{k.get('size')}"
+            by_id[kid] = k
+    return list(by_id.values())
+
+
+def analyze_keys(
+    ctx: ReportCtx,
+    domain: str,
+    keys: list[dict],
+    *,
+    weak_keys: list[dict] | None = None,
+) -> dict:
     collapsed = collapse_key_versions([k for k in keys if isinstance(k, dict)])
     states: Counter = Counter()
     weak = []
@@ -3110,12 +3574,29 @@ def analyze_keys(ctx: ReportCtx, domain: str, keys: list[dict]) -> dict:
     for name, k in collapsed.items():
         state = str(k.get("state") or "Unknown")
         states[state] += 1
-        alg = k.get("algorithm") or ""
-        size = k.get("size") or 0
         if state != "Active":
             non_active.append({"name": name, "state": state, "version": k.get("version")})
-        if (alg == "RSA" and size and size < 2048) or (alg == "AES" and size and size < 128):
-            weak.append({"name": name, "algorithm": alg, "size": size})
+
+    # Filter hunt + general sample (union) so nothing in either path is missed.
+    if weak_keys is not None:
+        weak_source = list(keys) + list(weak_keys)
+    else:
+        weak_source = keys
+    weak_collapsed = collapse_key_versions(
+        [k for k in weak_source if isinstance(k, dict)]
+    )
+    for name, k in weak_collapsed.items():
+        is_weak, reason = _is_weak_key(k)
+        if is_weak:
+            weak.append(
+                {
+                    "name": name,
+                    "algorithm": k.get("algorithm") or "",
+                    "size": k.get("size") or 0,
+                    "curve": _key_curve(k) or None,
+                    "reason": reason,
+                }
+            )
     if non_active:
         ctx.add(
             "keys",
@@ -3131,7 +3612,7 @@ def analyze_keys(ctx: ReportCtx, domain: str, keys: list[dict]) -> dict:
                 "keys_weak_algorithm",
                 "WARNING",
                 f"[{domain}] Key '{w['name']}' has weak configuration: "
-                f"{w['algorithm']} ({w['size']} bits).",
+                f"{w.get('reason') or w['algorithm']}.",
             )
         if len(weak) > 10:
             ctx.add(
@@ -3262,12 +3743,23 @@ def check_keys_domains(
         try:
             dclient = client.for_domain(name)
             page = dclient.get_paginated("/v1/vault/keys2/", limit=100, max_items=max_keys)
+            # Targeted weak-key hunt via algorithm/size/curveid filters (not capped
+            # by --max-keys the same way — full vault can be huge; filters are small).
+            weak_candidates = fetch_weak_key_candidates(
+                dclient, max_items=max(max_keys, 5000)
+            )
             users_page = dclient.get_paginated(
                 "/v1/usermgmt/users/", limit=100, max_items=max_users
             )
-            analysis = analyze_keys(ctx, name, page.get("resources") or [])
+            analysis = analyze_keys(
+                ctx,
+                name,
+                page.get("resources") or [],
+                weak_keys=weak_candidates,
+            )
             analysis["total_reported"] = page.get("total")
             analysis["truncated"] = page.get("truncated")
+            analysis["weak_filter_candidates"] = len(weak_candidates)
             users = summarize_users(
                 users_page.get("resources") or [],
                 now=ctx.now,
@@ -4100,7 +4592,7 @@ def run(
     check_notifications(ctx, client)
     check_backups(ctx, client, domain_scope=domain_scope)
     check_alarms(ctx, client)
-    check_cas(ctx, client)
+    check_cas(ctx, client, domain_scope=domain_scope)
     check_password_policies(ctx, client)
     check_ldap(ctx, client)
     check_domains_meta(ctx, client)
@@ -4212,6 +4704,29 @@ def _print_posture_header(report: dict) -> None:
             print(
                 f"  (Backups detail) {name}: total={d.get('total')}, "
                 f"system={d.get('system_count')}, domain={d.get('domain_count')}"
+            )
+    certs = p.get("certificates") or {}
+    for d in (certs.get("by_domain") or [])[:12]:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("domain")
+        if d.get("skipped"):
+            print(
+                f"  (CAs detail) {name}: skipped "
+                f"({d.get('reason') or 'n/a'}; status={d.get('status')})"
+            )
+        elif d.get("error"):
+            print(
+                f"  (CAs detail) {name}: error "
+                f"(status={d.get('status')}; {d.get('error')})"
+            )
+        else:
+            loc = d.get("local") if isinstance(d.get("local"), dict) else {}
+            ext = d.get("external") if isinstance(d.get("external"), dict) else {}
+            print(
+                f"  (CAs detail) {name}: "
+                f"local={loc.get('total')} (expired={loc.get('expired')}), "
+                f"external={ext.get('total')} (expired={ext.get('expired')})"
             )
     print("=== End posture table ===")
     print()

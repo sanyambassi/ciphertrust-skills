@@ -38,7 +38,8 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 
 ## Interfaces
 
-15. `GET /v1/configs/interfaces/` (auth modes per Thales interface auth docs)
+15. `GET /v1/configs/interfaces/` — paginate (default page is 10; do not use first page alone)
+    (auth modes per Thales interface auth docs)
     - Enabled TCP mode `no-tls-*` (no TLS) → CRITICAL
     - Enabled `tls-cert-and-pw` (preferred) → INFO
     - Service interfaces present but none on `tls-cert-and-pw` → WARNING
@@ -75,11 +76,14 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 
 ## Certificate authorities
 
-23. Local / external / trusted CAs (`notAfter`, `state`) — same validity scale as interface TLS certs:
-    - Expired → CRITICAL
-    - ≤30 days left → WARNING
-    - >30 days left → INFO
-    - Note in message when a CA is still referenced by an enabled interface
+23. Local / external CAs are **per-domain** (`GET /v1/ca/local-cas`, `/v1/ca/external-cas`,
+    `limit=100`): login with token `domain` like keys/backups; aggregate totals across
+    domains checked; 401/403 → skip domain (skipped ≠ clean). Trusted CAs
+    (`/v1/trusted-cas`) are appliance-scoped — check once on auth client; subdomain
+    403 → skip trusted with note.
+    - Expired → CRITICAL; ≤30 days → WARNING; >30 days → INFO
+    - Note when a CA is still referenced by an enabled interface
+    - Findings prefixed with `[domain]` for local/external
 
 ## Keys
 
@@ -88,7 +92,8 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
     `key_usage_count_including_subdomains` series (under/over-counts the estate).
 25. Per domain (weak/inactive keys + user hygiene): authenticate with token `domain` parameter,
     then page `/v1/vault/keys2/` and `/v1/usermgmt/users/`
-    - Weak RSA (< 2048) or AES (< 128) → WARNING
+    - Weak keys → WARNING: RSA &lt; 2048; any DES/DESede/3DES; AES/ARIA &lt; 128; EC size &lt; 256 or ~224-bit curves
+    - Prefer `keys2` filters (`algorithm`, repeated `size`, repeated `curveid`) to find weak candidates; `--max-keys` still caps the general vault sample (inactive/state)
     - Highest key version inactive (not `Active`) → WARNING
     - User hygiene + top 5 by logins (see access control)
     - Domain auth 401/403 → skip and tell the user that domain could not be checked (not CRITICAL by itself)

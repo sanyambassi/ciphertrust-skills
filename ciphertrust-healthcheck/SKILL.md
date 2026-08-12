@@ -93,7 +93,7 @@ Rules for **Summary** / **Result**:
 - Non-PASS **Result** cells are also bold (`**WARN**` / `**FAIL**`).
 - Do not rename the third column back to “Highlights”.
 
-**3. Keys caveat** (one line under the table): always say **domains checked** vs **domains skipped**; weak-key scan only covers scanned domains (≤ `--max-keys`). Domains skipped ≠ clean estate.
+**3. Keys caveat** (one line under the table): always say **domains checked** vs **domains skipped**; general vault sample is ≤ `--max-keys` per domain (inactive/state). Weak-key hunt also uses `keys2` filters (`algorithm` / `size` / `curveid`) so it is not limited to that sample alone. Domains skipped ≠ clean estate.
 
 **4. Findings** — two short lists (bullets): **CRITICAL** then **WARNING** (all of them, or “none”). INFO only if it explains a SKIP.
 
@@ -109,7 +109,7 @@ Details: [references/checklist.md](references/checklist.md).
 | Operations | Backups, alarms, licenses, SMTP, banner, RoT key age |
 | Interfaces | Interface modes/TLS; web PQC TLS groups; leaf TLS cert expiry (`/interfaces/{name}/certificate`); log forwarders; SSH/SNMP/preboot; SMTP |
 | Access | Password policies, LDAP TLS, users (locked / never-login / inactive / failed logins / top logins) |
-| CAs | Local, external, trusted cert expiry (same scale: expired CRITICAL; ≤30d WARNING; >30d INFO) |
+| CAs | Per-domain local/external + appliance trusted cert expiry (expired CRITICAL; ≤30d WARNING; >30d INFO) |
 | Keys | Prometheus vault DEK totals + per-domain vault scan (weak / inactive keys) |
 | CTE | Client health, GuardPoints, Learn Mode (`--no-cte` to skip) |
 | Audit | `ENABLE_RECORDS_DB_STORE`: if on → DB records; if off → note disabled + Loki `/v1/audit/loki/api/v1/query_range` |
@@ -119,7 +119,8 @@ Details: [references/checklist.md](references/checklist.md).
 - Estate key count: Prometheus vault **DEK** totals when enabled (never the scrape token).
   Do not sum per-domain license `including_subdomains` series — that under/over-counts.
 - Per domain (for weak/inactive keys + user hygiene): login with token `domain` parameter,
-  page `/v1/vault/keys2/` and users (top 5 by `logins_count`, up to `--max-users`).
+  page `/v1/vault/keys2/` (≤ `--max-keys`) and users (top 5 by `logins_count`, up to `--max-users`).
+  Weak keys: also query `keys2` with `algorithm` / repeated `size` / `curveid` filters.
 - Domain 401/403: skip and report that the domain could not be checked.
 
 ## Scoring
