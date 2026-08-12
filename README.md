@@ -8,20 +8,55 @@ Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill
 |-------|---------|
 | `ciphertrust-healthcheck/` | Read-only health / posture for CipherTrust Manager |
 
-## Use in Cursor
+## Use with AI agents
+
+These skills follow the open [Agent Skills](https://agentskills.io) format (`SKILL.md` + optional `scripts/` / `references/`). Install **one skill folder** at a time. Set `CM_*` (see Environment) in an environment that can reach your CipherTrust Manager host — sandboxed chat often cannot. Do not test reachability with a GET to bare `CM_BASE` (`/api` 404 is normal); use the healthcheck script or `GET /v1/system/info` after auth.
+
+### Cursor
 
 1. Copy `ciphertrust-healthcheck/` into a Cursor skills path:
    - Project: `.cursor/skills/ciphertrust-healthcheck/`
    - Personal: `~/.cursor/skills/ciphertrust-healthcheck/`
-2. Set `CM_*` env variables (see Environment), restart Cursor, then run `/ciphertrust-healthcheck`.
+2. Restart Cursor, then run `/ciphertrust-healthcheck` (or ask about CM health/posture).
 
 See [Cursor Skills](https://cursor.com/help/customization/skills).
 
-## Use in Claude
+### Claude
 
 1. Zip **one** skill folder only (contents rooted at `ciphertrust-healthcheck/`).
 2. Upload that zip as a skill (Claude allows exactly one `SKILL.md` per zip).
-3. Provide `CM_*` env vars in an environment that can reach your CM host (Claude Code / local). Sandboxed chat often cannot reach appliance URLs. Do not test reachability with a GET to bare `CM_BASE` (`/api` 404 is normal); use the healthcheck script or `GET /v1/system/info` after auth.
+3. Prefer Claude Code / local tools that can reach your CM host and see `CM_*`.
+
+See [Using skills in Claude](https://support.claude.com/en/articles/12512180-using-skills-in-claude).
+
+### Google Antigravity
+
+1. Copy `ciphertrust-healthcheck/` into:
+   - Workspace: `<workspace>/.agents/skills/ciphertrust-healthcheck/`
+   - Global: `~/.gemini/config/skills/ciphertrust-healthcheck/`
+2. Restart or start a new conversation; the agent discovers skills by name/description.
+
+See [Antigravity Skills](https://antigravity.google/docs/skills).
+
+### OpenAI ChatGPT and Codex
+
+Skills work in ChatGPT (desktop / Work) and Codex (CLI, IDE, desktop). Same folder layout: one skill directory with `SKILL.md`.
+
+**Local / Codex**
+
+1. Copy `ciphertrust-healthcheck/` into a Codex skills path, for example:
+   - Repo: `.agents/skills/ciphertrust-healthcheck/`
+   - User: `~/.agents/skills/ciphertrust-healthcheck/`
+2. Restart Codex if needed. Invoke with `/skills`, `$ciphertrust-healthcheck`, or by describing a CM health check.
+3. Or install from a GitHub skill folder URL via `$skill-installer` (see [openai/skills](https://github.com/openai/skills)).
+
+**ChatGPT**
+
+1. Create or upload the skill (Skills in the sidebar, or ask ChatGPT to build/install from the folder).
+2. Use `@` to pick the skill, or let ChatGPT match on the description.
+3. Full healthcheck needs a host that can run the script and reach CM — use Codex CLI / desktop with local tools, not a sandboxed web chat alone.
+
+See [Build skills](https://learn.chatgpt.com/docs/build-skills), [Using skills (Academy)](https://openai.com/academy/skills/), and [Skills in ChatGPT](https://help.openai.com/en/articles/20001066-skills-in-chatgpt).
 
 ## Credentials for a true healthcheck
 
