@@ -1,5 +1,4 @@
-"""Reads CM_* environment variables. Never logs secrets.
-"""
+"""Minimal CipherTrust Manager REST client. Reads CM_* from the environment; never logs secrets."""
 from __future__ import annotations
 
 import json
