@@ -1,6 +1,4 @@
-"""Minimal CipherTrust Manager REST client for offline/air-gapped agents.
-
-Reads CM_* environment variables. Never logs secrets.
+"""Reads CM_* environment variables. Never logs secrets.
 """
 from __future__ import annotations
 
