@@ -11,7 +11,7 @@ Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill
 
 ## Use with AI agents
 
-These skills follow the open [Agent Skills](https://agentskills.io) format (`SKILL.md` + optional `scripts/` / `references/`). Install **one skill folder** at a time. Set `CM_*` (see Environment) in an environment that can reach your CipherTrust Manager host. Do not GET bare `CM_BASE`.
+These skills follow the open [Agent Skills](https://agentskills.io) format (`SKILL.md` + optional `scripts/` / `references/`). Install **one skill folder** at a time. Set `CM_*` (see Environment) in an environment that can reach your CipherTrust Manager host.
 
 ### Cursor
 
