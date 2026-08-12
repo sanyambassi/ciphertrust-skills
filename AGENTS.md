@@ -1,41 +1,33 @@
-# CipherTrust skills
+# Agent guidelines
 
-Each skill folder is **self-contained** and ready for any AI assistant that loads Agent Skills.
-
-## Install / upload
-
-Assistants that require **exactly one `SKILL.md` per zip**: zip **one skill folder** (not this whole repo).
-
-| Skill folder | Upload when |
-|--------------|-------------|
-| `ciphertrust-healthcheck/` | Health / posture / triage for CipherTrust Manager (also called CM, CTM, CipherTrust, Thales KMS / key manager, KeySecure) |
+Conventions for authoring and maintaining skills in this repository.
+Users installing a skill do not need this file: see [README.md](README.md) for setup,
+and each skill's `SKILL.md` for how that skill behaves at runtime.
 
 ## Layout
 
-```text
-ciphertrust-skills/
-├── AGENTS.md
-├── README.md
-└── ciphertrust-healthcheck/
-    ├── SKILL.md
-    ├── lib/cm_client.py
-    ├── references/
-    └── scripts/healthcheck.py
-```
+| Path | Purpose |
+|------|---------|
+| `ciphertrust-healthcheck/` | Read-only CipherTrust Manager health / posture skill |
 
-## Healthcheck (quick)
+## Skill structure
 
-From `ciphertrust-healthcheck/`:
+| Topic | Rule |
+|-------|------|
+| Self-contained | One `SKILL.md` per folder, with its own `lib/`, `scripts/`, `references/`. No `../` imports between skills at runtime |
+| Frontmatter | `name` and `description` only; the description must say when to use the skill |
+| Naming | Folder and `name` are `ciphertrust-<skill-name>` |
+| Dependencies | Prefer the Python standard library so a skill runs without `pip install` |
+| Secrets | Never commit hosts, credentials, tokens, or `.env`. Docs use placeholders (`cm.example.com`, `ChangeMe`) |
+| Docs | Runtime behavior belongs in `SKILL.md`; setup belongs in `README.md`. Link instead of duplicating |
 
-```bash
-export CM_BASE="https://cm.example.com/api"
-export CM_USERNAME="..."
-export CM_PASSWORD="..."
-python scripts/healthcheck.py
-```
+## Adding a skill
 
-Exit codes: `0` OK, `1` DEGRADED, `2` CRITICAL or UNREACHABLE.
+1. Create `ciphertrust-<name>/` with a `SKILL.md` and any local `lib/` / `scripts/` / `references/`.
+2. Add a row to the skill table in [README.md](README.md).
+3. Open a PR describing what the skill does and when an agent should load it.
 
-Present healthcheck results using the skill’s **How to present** section (header + posture table **Area | Result | Summary** — copy script text including `**bold**` on WARN/FAIL drivers — + CRITICAL/WARNING lists). On Windows, if Process `CM_*` is empty, read User then Machine and promote into the process before running. Never invent credentials. Never echo secrets. Do not remediate without user confirmation.
+## Before committing a change to a runner script
 
-**Reachability:** do not probe bare `CM_BASE` (`/api` often 404s). Run `scripts/healthcheck.py`, or preflight with auth + `GET /v1/system/info`.
+- `python -m py_compile ciphertrust-healthcheck/scripts/healthcheck.py ciphertrust-healthcheck/lib/cm_client.py`
+- Smoke test against a real appliance with `CM_*` set, then confirm scoring and output still match `SKILL.md` and `references/checklist.md`.

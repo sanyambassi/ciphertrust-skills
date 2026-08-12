@@ -94,7 +94,7 @@ Exit codes: `0` OK · `1` DEGRADED · `2` CRITICAL / UNREACHABLE.
 
 Open a PR with a clear description of the change. Keep each skill self-contained (one `SKILL.md`); never commit hosts, credentials, tokens, or `.env` files.
 
-To add a skill: create `ciphertrust-<name>/` with its own `SKILL.md` and local `lib/` / `scripts/` / `references/` (no `../` to siblings at runtime), then add a row to the table above.
+Authoring conventions for new skills: [AGENTS.md](AGENTS.md).
 
 ## License
 
