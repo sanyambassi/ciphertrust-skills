@@ -2,7 +2,7 @@
 
 Portable Agent Skills for Thales CipherTrust Manager.
 
-Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill needs). Zip or install **one folder at a time** to use AI agents and AI assistants.
+Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill needs). Zip or install **one folder at a time** to use with AI agents and AI assistants.
 
 | Skill | Purpose |
 |-------|---------|
