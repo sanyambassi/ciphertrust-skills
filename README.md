@@ -2,7 +2,7 @@
 
 Portable Agent Skills for Thales CipherTrust Manager.
 
-Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill needs). Zip or install **one folder at a time** to use with AI agents and AI assistants.
+Each skill folder is **self-contained** (one `SKILL.md` plus whatever that skill needs). Zip or install **one folder at a time**. Skills do not depend on or mention each other. How to run a skill is in that skill’s `README.md`.
 
 | Skill | Purpose |
 |-------|---------|
@@ -119,28 +119,6 @@ CM_PASSWORD=ChangeMe
 CM_TLS_INSECURE=1
 EOF
 ```
-
-## Run healthcheck
-
-```bash
-cd ciphertrust-healthcheck
-python scripts/healthcheck.py
-python scripts/healthcheck.py --json
-```
-
-Exit codes: `0` OK · `1` DEGRADED · `2` CRITICAL / UNREACHABLE.
-
-## Run key inventory
-
-```bash
-cd ciphertrust-key-inventory
-python scripts/inventory.py
-python scripts/inventory.py --domain NAME
-python scripts/inventory.py --html PATH
-python scripts/inventory.py --json
-```
-
-Exit codes: `0` completed · `2` unreachable / auth failed.
 
 ## Contributing
 

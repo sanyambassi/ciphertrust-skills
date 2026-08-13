@@ -294,12 +294,12 @@ def print_human(report: dict[str, Any]) -> None:
         f"LDT: {totals.get('cte_ldt', 0)}    "
         f"Standard: {totals.get('cte_standard', 0)}"
     )
-    print(f"AKeyless Customer Fragments: {totals.get('akeyless_cf', 0)}")
+    print(f"Akeyless Customer Fragments: {totals.get('akeyless_cf', 0)}")
 
     print()
     print("=== Totals by domain ===")
     print(
-        f"| Domain | Keys | Version objects | 2+ versions | 3+ versions | System | AKeyless CF | Weak | Inactive | {due_lbl} | Exportable | Deletable | CTE | LDT | Standard |"
+        f"| Domain | Keys | Version objects | 2+ versions | 3+ versions | System | Akeyless CF | Weak | Inactive | {due_lbl} | Exportable | Deletable | CTE | LDT | Standard |"
     )
     print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for row in totals.get("by_domain") or []:
@@ -328,7 +328,7 @@ def print_human(report: dict[str, Any]) -> None:
 
     cf_rows = [r for r in catalog if r.get("akeyless_cf")]
     print()
-    print(f"=== AKeyless Customer Fragments ({len(cf_rows)}) ===")
+    print(f"=== Akeyless Customer Fragments ({len(cf_rows)}) ===")
     if cf_rows:
         lines = []
         for r in cf_rows[:CHAT_LIST_CAP]:

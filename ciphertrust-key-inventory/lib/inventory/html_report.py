@@ -81,7 +81,7 @@ def render_html(report: dict[str, Any]) -> str:
         ),
         _tab_button(
             "akeyless",
-            "AKeyless CF",
+            "Akeyless CF",
             "MUTED",
             result_label=str(_n(totals.get("akeyless_cf"))),
         ),
@@ -330,7 +330,7 @@ def _overview_panel(report: dict[str, Any]) -> str:
         f"{_kpi('Keys with 2+ versions', totals.get('keys_multi_version', 0), '')}"
         f"{_kpi('Keys with 3+ versions', totals.get('keys_three_plus', 0), '')}"
         f"{_kpi('System', totals.get('system', 0), 'info')}"
-        f"{_kpi('AKeyless CF', totals.get('akeyless_cf', 0), 'info' if _n(totals.get('akeyless_cf')) else '')}"
+        f"{_kpi('Akeyless CF', totals.get('akeyless_cf', 0), 'info' if _n(totals.get('akeyless_cf')) else '')}"
         f"{_kpi('Weak', totals.get('weak', 0), 'warn' if _n(totals.get('weak')) else '')}"
         f"{_kpi('Inactive', totals.get('inactive', 0), 'warn' if _n(totals.get('inactive')) else '')}"
         f"{_kpi(due_lbl, totals.get('about_to_change', 0), '')}"
@@ -345,7 +345,7 @@ def _overview_panel(report: dict[str, Any]) -> str:
         "</div>"
         f"{note}"
         f"<div class='charts'>{chart_html}</div>"
-        f"{_table(['Domain', 'Keys', 'Version objects', '2+ versions', '3+ versions', 'System', 'AKeyless CF', 'Weak', 'Inactive', due_lbl, 'Exportable', 'Deletable', 'CTE', 'LDT', 'Standard'], domain_rows, 'Totals by domain')}"
+        f"{_table(['Domain', 'Keys', 'Version objects', '2+ versions', '3+ versions', 'System', 'Akeyless CF', 'Weak', 'Inactive', due_lbl, 'Exportable', 'Deletable', 'CTE', 'LDT', 'Standard'], domain_rows, 'Totals by domain')}"
         f"{_table(['Account', 'Orphaned keys'], orphan_rows, 'Orphaned keys by account')}"
         "</section>"
     )
@@ -403,12 +403,12 @@ def _akeyless_panel(report: dict[str, Any]) -> str:
 
     return (
         "<section class='tab-panel' id='panel-akeyless' role='tabpanel' hidden>"
-        "<div class='panel-head'><div class='head-row'><h2>AKeyless Customer Fragments</h2>"
+        "<div class='panel-head'><div class='head-row'><h2>Akeyless Customer Fragments</h2>"
         f"<span class='st MUTED'>{len(rows)}</span></div>"
         "<div class='summary'>Names matching cf-&lt;uuid&gt; in each checked domain. Usually Opaque Object, no owner.</div>"
         "</div>"
         f"<div class='charts'>{''.join(_chart_box(c) for c in charts)}</div>"
-        f"{_key_table(rows, ['Domain', 'Name', 'Type', 'Algorithm', 'State', 'Owner'], cells, 'AKeyless Customer Fragments')}"
+        f"{_key_table(rows, ['Domain', 'Name', 'Type', 'Algorithm', 'State', 'Owner'], cells, 'Akeyless Customer Fragments')}"
         "</section>"
     )
 
@@ -646,7 +646,7 @@ def _catalog_panel(report: dict[str, Any]) -> str:
         ("Version", None),
         ("Versions listed", None),
         ("System", None),
-        ("AKeyless CF", None),
+        ("Akeyless CF", None),
         ("Weak", None),
         ("CTE", None),
         ("Policy", 13),
@@ -809,7 +809,7 @@ def _tab_charts(report: dict[str, Any]) -> dict[str, list[dict]]:
         ("App/User", user_n, _PAL["pass"]),
     ]
     if cf_n:
-        ownership.append(("AKeyless CF", cf_n, "#7c3aed"))
+        ownership.append(("Akeyless CF", cf_n, "#7c3aed"))
     add(
         "overview",
         _doughnut(
@@ -896,10 +896,10 @@ def _tab_charts(report: dict[str, Any]) -> dict[str, list[dict]]:
             "cf-dom",
             "By domain",
             [(k, v, _PAL["info"]) for k, v in cf_dom.items()],
-            "AKeyless CF",
+            "Akeyless CF",
         )
         if cf_dom
-        else _zero_doughnut("cf-dom", "By domain", "AKeyless CF", "AKeyless CF"),
+        else _zero_doughnut("cf-dom", "By domain", "Akeyless CF", "Akeyless CF"),
     )
 
     weak_alg: dict[str, int] = {}
