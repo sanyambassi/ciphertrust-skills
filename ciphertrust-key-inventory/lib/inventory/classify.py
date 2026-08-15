@@ -117,14 +117,15 @@ def cte_section(k: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def cte_fields(k: dict[str, Any]) -> dict[str, Any]:
+    empty = {
+        "cte": False,
+        "cte_versioned": None,
+        "cte_policy": None,
+        "cte_encryption_mode": None,
+    }
     cte = cte_section(k)
-    if cte is None:
-        return {
-            "cte": False,
-            "cte_versioned": None,
-            "cte_policy": None,
-            "cte_encryption_mode": None,
-        }
+    if cte is None or not owner_id(k):
+        return empty
     versioned = cte.get("cte_versioned")
     if versioned is True:
         cte_versioned: bool | None = True
@@ -264,6 +265,7 @@ def catalog_row(
         "usage": k.get("usage"),
         "usageMask": k.get("usageMask"),
         "ownerId": owner_id(k),
+        "owner_name": None,
         "service_name": service_name(k),
         "aliases": _aliases(k),
         "labels": _labels(k),
@@ -279,7 +281,7 @@ def catalog_row(
         "days_to_protect_stop": d_pstop,
         "days_to_activate": d_act,
         "rotation_due": rot_due,
-        "never_rotated": version in (None, 0),
+        "never_rotated": version == 0,
         "cte": cte["cte"],
         "cte_versioned": cte["cte_versioned"],
         "cte_policy": cte["cte_policy"],

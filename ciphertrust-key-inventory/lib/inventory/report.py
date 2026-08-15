@@ -38,6 +38,7 @@ _CSV_COLUMNS = [
     "usage",
     "usageMask",
     "ownerId",
+    "owner_name",
     "service_name",
     "aliases",
     "labels",
@@ -97,6 +98,8 @@ def filter_catalog(rows: list[dict[str, Any]], opts: dict[str, Any]) -> list[dic
 
 
 def is_lifecycle(row: dict[str, Any]) -> bool:
+    if row.get("system") or row.get("akeyless_cf"):
+        return False
     return bool(
         row.get("about_to_change")
         or row.get("inactive")
@@ -121,103 +124,165 @@ def lifecycle_reasons(row: dict[str, Any], window_days: int) -> list[str]:
     if row.get("rotation_due"):
         reasons.append("rotation due")
     if row.get("never_rotated") and row.get("older_than_1y"):
-        reasons.append("never rotated")
+        reasons.append("never rotated and older than 1 year")
     if row.get("older_than_3y"):
-        reasons.append("older than 3y")
+        reasons.append("older than 3 years")
     elif row.get("older_than_1y") and not row.get("never_rotated"):
-        reasons.append("older than 1y")
+        reasons.append("older than 1 year")
     return reasons
 
 
 def due_soon_label(window_days: int) -> str:
     n = int(window_days or 30)
-    return f"Activate, deactivate, rotate ({n}d)"
+    return f"Activate, deactivate, ProtectStop, rotate ({n}d)"
 
 
 def _count(rows: list[dict[str, Any]], key: str) -> int:
     return sum(1 for r in rows if r.get(key))
 
 
+def _row_name_key(row: dict[str, Any]) -> tuple[str, str]:
+    return (str(row.get("domain") or ""), str(row.get("name") or row.get("id") or ""))
+
+
+def _latest_per_name(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        key = _row_name_key(r)
+        prev = best.get(key)
+        if prev is None or int(r.get("version") or 0) > int(prev.get("version") or 0):
+            best[key] = r
+    return list(best.values())
+
+
+def _version_name_buckets(name_counts: Counter) -> dict[str, int]:
+    one = two = three = four_plus = 0
+    for n in name_counts.values():
+        if n <= 1:
+            one += 1
+        elif n == 2:
+            two += 1
+        elif n == 3:
+            three += 1
+        else:
+            four_plus += 1
+    return {
+        "keys_one_version": one,
+        "keys_two_versions": two,
+        "keys_three_versions": three,
+        "keys_four_plus": four_plus,
+        "keys_multi_version": two + three + four_plus,
+        "keys_three_plus": three + four_plus,
+    }
+
+
+def _empty_domain_slot() -> dict[str, int]:
+    return {
+        "keys": 0,
+        "version_objects": 0,
+        "keys_one_version": 0,
+        "keys_two_versions": 0,
+        "keys_three_versions": 0,
+        "keys_four_plus": 0,
+        "keys_multi_version": 0,
+        "keys_three_plus": 0,
+        "system": 0,
+        "akeyless_cf": 0,
+        "weak": 0,
+        "inactive": 0,
+        "about_to_change": 0,
+        "exportable": 0,
+        "deletable": 0,
+        "cte": 0,
+        "cte_ldt": 0,
+        "cte_standard": 0,
+    }
+
+
 def build_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    objects = [r for r in rows if isinstance(r, dict)]
+    unique_rows = _latest_per_name(objects)
+    name_counts: Counter = Counter(_row_name_key(r) for r in objects)
     by_domain: dict[str, dict[str, int]] = {}
     by_algorithm: Counter = Counter()
     by_state: Counter = Counter()
     by_type: Counter = Counter()
     by_kind: Counter = Counter()
-    for r in rows:
+
+    def slot(domain: str) -> dict[str, int]:
+        return by_domain.setdefault(domain, _empty_domain_slot())
+
+    for r in objects:
         domain = str(r.get("domain") or "")
-        slot = by_domain.setdefault(
-            domain,
-            {
-                "keys": 0,
-                "version_objects": 0,
-                "keys_multi_version": 0,
-                "keys_three_plus": 0,
-                "system": 0,
-                "akeyless_cf": 0,
-                "weak": 0,
-                "inactive": 0,
-                "about_to_change": 0,
-                "exportable": 0,
-                "deletable": 0,
-                "cte": 0,
-                "cte_ldt": 0,
-                "cte_standard": 0,
-            },
-        )
-        slot["keys"] += 1
-        slot["version_objects"] += int(r.get("version_count") or 1)
-        if (r.get("version") or 0) >= 1:
-            slot["keys_multi_version"] += 1
-        if (r.get("version") or 0) >= 2:
-            slot["keys_three_plus"] += 1
+        s = slot(domain)
+        s["version_objects"] += 1
         if r.get("system"):
-            slot["system"] += 1
+            s["system"] += 1
+            by_kind[str(r.get("system_kind") or "system")] += 1
         if r.get("akeyless_cf"):
-            slot["akeyless_cf"] += 1
+            s["akeyless_cf"] += 1
         if r.get("weak"):
-            slot["weak"] += 1
+            s["weak"] += 1
         if r.get("inactive"):
-            slot["inactive"] += 1
+            s["inactive"] += 1
         if r.get("about_to_change"):
-            slot["about_to_change"] += 1
+            s["about_to_change"] += 1
         if r.get("exportable"):
-            slot["exportable"] += 1
+            s["exportable"] += 1
         if r.get("deletable"):
-            slot["deletable"] += 1
+            s["deletable"] += 1
         if r.get("cte"):
-            slot["cte"] += 1
+            s["cte"] += 1
             if r.get("cte_policy") == "LDT":
-                slot["cte_ldt"] += 1
+                s["cte_ldt"] += 1
             else:
-                slot["cte_standard"] += 1
-        alg = str(r.get("algorithm") or "unknown")
-        by_algorithm[alg] += 1
+                s["cte_standard"] += 1
+        by_algorithm[str(r.get("algorithm") or "unknown")] += 1
         by_state[str(r.get("state") or "Unknown")] += 1
         by_type[str(r.get("objectType") or "unknown")] += 1
-        if r.get("system"):
-            by_kind[str(r.get("system_kind") or "system")] += 1
+
+    for r in unique_rows:
+        domain = str(r.get("domain") or "")
+        s = slot(domain)
+        s["keys"] += 1
+        nvers = int(name_counts.get(_row_name_key(r), 1) or 1)
+        if nvers <= 1:
+            s["keys_one_version"] += 1
+        elif nvers == 2:
+            s["keys_two_versions"] += 1
+            s["keys_multi_version"] += 1
+        elif nvers == 3:
+            s["keys_three_versions"] += 1
+            s["keys_multi_version"] += 1
+            s["keys_three_plus"] += 1
+        else:
+            s["keys_four_plus"] += 1
+            s["keys_multi_version"] += 1
+            s["keys_three_plus"] += 1
     domain_rows = [{"domain": name, **counts} for name, counts in by_domain.items()]
-    domain_rows.sort(key=lambda d: (-int(d.get("keys") or 0), str(d.get("domain"))))
+    domain_rows.sort(
+        key=lambda d: (-int(d.get("version_objects") or 0), str(d.get("domain")))
+    )
     return {
-        "keys": len(rows),
-        "version_objects": sum(int(r.get("version_count") or 1) for r in rows),
-        "keys_multi_version": sum(1 for r in rows if (r.get("version") or 0) >= 1),
-        "keys_three_plus": sum(1 for r in rows if (r.get("version") or 0) >= 2),
-        "system": _count(rows, "system"),
-        "akeyless_cf": _count(rows, "akeyless_cf"),
-        "weak": _count(rows, "weak"),
-        "inactive": _count(rows, "inactive"),
-        "about_to_change": _count(rows, "about_to_change"),
-        "lifecycle": sum(1 for r in rows if is_lifecycle(r)),
-        "exportable": _count(rows, "exportable"),
-        "deletable": _count(rows, "deletable"),
-        "never_exported": _count(rows, "neverExported"),
-        "never_exportable": _count(rows, "neverExportable"),
-        "cte": _count(rows, "cte"),
-        "cte_ldt": sum(1 for r in rows if r.get("cte") and r.get("cte_policy") == "LDT"),
+        "keys": len(unique_rows),
+        "version_objects": len(objects),
+        **_version_name_buckets(name_counts),
+        "system": _count(objects, "system"),
+        "akeyless_cf": _count(objects, "akeyless_cf"),
+        "weak": _count(objects, "weak"),
+        "inactive": _count(objects, "inactive"),
+        "about_to_change": _count(objects, "about_to_change"),
+        "lifecycle": sum(1 for r in objects if is_lifecycle(r)),
+        "exportable": _count(objects, "exportable"),
+        "deletable": _count(objects, "deletable"),
+        "never_exported": _count(objects, "neverExported"),
+        "never_exportable": _count(objects, "neverExportable"),
+        "cte": _count(objects, "cte"),
+        "cte_ldt": sum(1 for r in objects if r.get("cte") and r.get("cte_policy") == "LDT"),
         "cte_standard": sum(
-            1 for r in rows if r.get("cte") and r.get("cte_policy") != "LDT"
+            1 for r in objects if r.get("cte") and r.get("cte_policy") != "LDT"
         ),
         "by_domain": domain_rows,
         "by_algorithm": dict(by_algorithm.most_common()),
@@ -232,6 +297,11 @@ def apply_presentation(report: dict[str, Any], filter_opts: dict[str, Any]) -> d
     for r in collected:
         if isinstance(r, dict):
             r["akeyless_cf"] = is_akeyless_cf(r)
+            if r.get("cte") and not r.get("ownerId"):
+                r["cte"] = False
+                r["cte_versioned"] = None
+                r["cte_policy"] = None
+                r["cte_encryption_mode"] = None
     shown = filter_catalog(collected, filter_opts)
     report["catalog_collected"] = len(collected)
     report["catalog"] = shown
@@ -262,7 +332,7 @@ def print_human(report: dict[str, Any]) -> None:
     window = int((report.get("options") or {}).get("window_days") or 30)
     due_lbl = due_soon_label(window)
     collected = report.get("catalog_collected")
-    shown = totals.get("keys", len(catalog))
+    shown_objects = totals.get("version_objects", len(catalog))
     skipped = domains.get("skipped") or []
     errors = domains.get("errors") or []
 
@@ -273,12 +343,9 @@ def print_human(report: dict[str, Any]) -> None:
         f"skipped: {domains.get('skipped_count', 0)}"
         + (f"    errors: {domains.get('error_count')}" if domains.get("error_count") else "")
     )
-    print(f"Keys in checked domains: {shown}")
-    if collected is not None and collected != shown:
-        print(f"Showing {shown} of {collected} after filters")
-    print(f"Version objects listed: {totals.get('version_objects', shown)}")
-    print(f"Keys with more than one version: {totals.get('keys_multi_version', 0)}")
-    print(f"Keys with 3 or more versions: {totals.get('keys_three_plus', 0)}")
+    print(f"Versions: {shown_objects}")
+    if collected is not None and collected != shown_objects:
+        print(f"Showing {shown_objects} of {collected} versions after filters")
     if report.get("truncated"):
         print("Catalog truncated by --max-keys; raise the limit for a full key list.")
     metrics = report.get("metrics") or {}
@@ -299,19 +366,38 @@ def print_human(report: dict[str, Any]) -> None:
     print()
     print("=== Totals by domain ===")
     print(
-        f"| Domain | Keys | Version objects | 2+ versions | 3+ versions | System | Akeyless CF | Weak | Inactive | {due_lbl} | Exportable | Deletable | CTE | LDT | Standard |"
+        f"| Domain | Versions | System | Akeyless CF | Weak | Inactive | {due_lbl} | Exportable | Deletable | CTE | LDT | Standard |"
     )
-    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for row in totals.get("by_domain") or []:
         print(
-            f"| {row.get('domain')} | {row.get('keys')} | {row.get('version_objects')} | "
-            f"{row.get('keys_multi_version')} | {row.get('keys_three_plus')} | {row.get('system')} | "
+            f"| {row.get('domain')} | {row.get('version_objects')} | {row.get('system')} | "
             f"{row.get('akeyless_cf')} | {row.get('weak')} | {row.get('inactive')} | "
             f"{row.get('about_to_change')} | {row.get('exportable')} | {row.get('deletable')} | "
             f"{row.get('cte')} | {row.get('cte_ldt')} | {row.get('cte_standard')} |"
         )
     if not (totals.get("by_domain") or []):
-        print("| (none) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |")
+        print("| (none) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |")
+
+    print()
+    print("=== Keys and Versions ===")
+    print(f"Keys (unique names): {totals.get('keys', 0)}")
+    print(f"Versions: {shown_objects}")
+    print(f"1 version (ID 0 only): {totals.get('keys_one_version', 0)}")
+    print(f"2 versions (IDs 0 and 1): {totals.get('keys_two_versions', 0)}")
+    print(f"3 versions (IDs 0, 1, and 2): {totals.get('keys_three_versions', 0)}")
+    print(f"3+ versions (ID 3 exists): {totals.get('keys_four_plus', 0)}")
+    name_counts: Counter = Counter(_row_name_key(r) for r in catalog)
+    multi = [(key, n) for key, n in name_counts.items() if n >= 2]
+    multi.sort(key=lambda item: (-item[1], item[0][0], item[0][1]))
+    if multi:
+        lines = [
+            f"- [{domain}] {name} — {n} versions"
+            for (domain, name), n in multi[:CHAT_LIST_CAP]
+        ]
+        print("\n".join(_fmt_list(lines, len(multi))))
+    else:
+        print("none with 2+ versions")
 
     system_rows = [r for r in catalog if r.get("system")]
     print()
@@ -369,14 +455,15 @@ def print_human(report: dict[str, Any]) -> None:
     else:
         print("none")
 
-    life_change = [r for r in catalog if r.get("about_to_change")]
-    life_inactive = [r for r in catalog if r.get("inactive")]
+    life_rows = [r for r in catalog if is_lifecycle(r)]
+    life_change = [r for r in life_rows if r.get("about_to_change")]
+    life_inactive = [r for r in life_rows if r.get("inactive")]
     life_old = [
         r
-        for r in catalog
+        for r in life_rows
         if (r.get("never_rotated") and r.get("older_than_1y")) or r.get("older_than_3y")
     ]
-    life_n = sum(1 for r in catalog if is_lifecycle(r))
+    life_n = len(life_rows)
     print()
     print(f"=== Lifecycle ({life_n}) ===")
     if life_n == 0:

@@ -92,10 +92,7 @@ Use this layout every time. Prefer the script’s tables and lists — do not in
 Key inventory
 CM: <version>    Host: <hostname from CM_BASE>
 Domains checked: <n>    skipped: <n>
-Keys in checked domains: <n>
-Version objects listed: <n>
-Keys with more than one version: <n>
-Keys with 3 or more versions: <n>
+Versions: <n>
 Total keys (including orphaned): <n>
 Never exported: <n>
 Never exportable: <n>
@@ -117,14 +114,16 @@ Akeyless Customer Fragments: <n>
 
 | Area | What you get |
 |------|----------------|
-| Catalog | One row per key name: current version number, how many version objects were listed, algorithm, size/curve, state, dates, owner, exportable/deletable, usage, CTE metadata |
+| Catalog | One row per key name in checked domains. Version ID is CM `version` (0 is the first). Versions is how many objects that name has. Also algorithm, size/curve, state, dates, owner, exportable/deletable, CTE metadata |
 | System | `citrus-*` names, and `ks-*` names that have `meta.service_name` and no owner |
 | Akeyless CF | In each checked domain, hunt `name=cf-*`. Classify `cf-<uuid>`. Usually Opaque Object, no owner. Not system keys |
 | Weak | Full list: RSA &lt;2048, DES/3DES, AES/ARIA &lt;128, EC &lt;256 or a weak curve |
-| CTE | Keys with a `meta.cte` section. `cte_versioned` true → LDT policies; false or not set → Standard policies |
-| Lifecycle | Inactive latest version; activation / deactivation / protect-stop in `--window-days`; rotation due; never rotated and older than one year |
+| CTE | Keys with a `meta.cte` section **and an owner**. Ownerless `meta.cte` (common on citrus system keys) is ignored. `cte_versioned` true → LDT policies; false or not set → Standard policies |
+| Lifecycle | App/user keys only (excludes system and Akeyless CF). Inactive; activation / deactivation / protect-stop in `--window-days`; rotation due; never rotated and older than one year; or older than three years |
 | Orphans | Orphaned keys by deleted-domain account (skipped on `--domain`) |
-| Metrics | Total keys including orphaned (skipped on `--domain`) |
+| Metrics | Total keys including orphaned. Overview State, Algorithms, and Versions by domain use that estate count when Prometheus DEK series exist (skipped on `--domain`). Versions by domain lists every domain (orphans included). Otherwise it uses version objects — the same count as CM `GET /v1/vault/keys2` `total` |
+
+HTML catalog: expand a name for the 5 newest versions; the name opens every version in a new tab. Cards: 1 version (ID 0 only), 2 versions (IDs 0–1), 3 versions (IDs 0–2), 3+ (version ID 3 exists). Owner shows `local|Name (user|group)`. Red means a later version’s owner differs from version 0.
 
 Per domain: authenticate with the token `domain` parameter, page keys in that domain with `fields=meta` and no default cap, hunt `citrus-*`, `ks-*` Opaque, and `cf-*`, and skip 401/403.
 

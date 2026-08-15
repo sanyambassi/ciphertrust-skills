@@ -176,6 +176,61 @@ def _fetch_labels(client: CmClient) -> dict[str, Any]:
     }
 
 
+def _user_friendly(u: dict[str, Any]) -> str:
+    uid = str(u.get("user_id") or "")
+    prefix = uid.split("|", 1)[0] if "|" in uid else "local"
+    name = u.get("name") or u.get("username") or u.get("nickname") or uid
+    return f"{prefix}|{name} (user)"
+
+
+def _fetch_owner_names(client: CmClient) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        page = client.get_paginated("/v1/usermgmt/users/", limit=100, max_items=5000)
+    except CmError:
+        page = {}
+    for u in page.get("resources") or []:
+        if not isinstance(u, dict):
+            continue
+        uid = str(u.get("user_id") or "")
+        if not uid:
+            continue
+        label = _user_friendly(u)
+        out[uid] = label
+        if "|" in uid:
+            out[uid.split("|", 1)[1]] = label
+    try:
+        gpage = client.get_paginated("/v1/usermgmt/groups/", limit=100, max_items=5000)
+    except CmError:
+        gpage = {}
+    for g in gpage.get("resources") or []:
+        if not isinstance(g, dict):
+            continue
+        gid = str(g.get("group_id") or g.get("id") or "")
+        if not gid:
+            continue
+        prefix = gid.split("|", 1)[0] if "|" in gid else "local"
+        name = g.get("name") or gid
+        label = f"{prefix}|{name} (group)"
+        out[gid] = label
+        if "|" in gid:
+            out[gid.split("|", 1)[1]] = label
+    return out
+
+
+def _apply_owner_names(catalog: list[dict[str, Any]], names: dict[str, str]) -> None:
+    for r in catalog:
+        oid = r.get("ownerId")
+        if not oid:
+            r["owner_name"] = None
+            continue
+        oid_s = str(oid)
+        label = names.get(oid_s)
+        if not label and "|" in oid_s:
+            label = names.get(oid_s.split("|", 1)[1])
+        r["owner_name"] = label
+
+
 def _identity(client: CmClient) -> dict[str, Any]:
     try:
         user = client.get("/v1/auth/self/user")
@@ -256,7 +311,8 @@ def fetch_orphans(client: CmClient) -> dict[str, Any]:
         for row in by_acct:
             if isinstance(row, dict):
                 total += int(
-                    row.get("orphaned_keys_count")
+                    row.get("orphaned_key_count")
+                    or row.get("orphaned_keys_count")
                     or row.get("count")
                     or row.get("keys")
                     or 0
@@ -308,7 +364,7 @@ def collect_domain_keys(
     merged = _merge_keys(listed, *hunts)
     collapsed, version_counts = collapse_versions(merged)
     rows = []
-    for k in collapsed:
+    for k in merged:
         name = str(k.get("name") or "")
         nvers = version_counts.get(name, 1) if name else 1
         rows.append(
@@ -323,14 +379,14 @@ def collect_domain_keys(
     return {
         "domain": domain,
         "raw": len(merged),
-        "unique": len(rows),
+        "unique": len(collapsed),
         "version_objects": len(merged),
-        "keys_multi_version": sum(
-            1 for r in rows if (r.get("version") or 0) >= 1
-        ),
-        "keys_three_plus": sum(
-            1 for r in rows if (r.get("version") or 0) >= 2
-        ),
+        "keys_one_version": sum(1 for n in version_counts.values() if n <= 1),
+        "keys_two_versions": sum(1 for n in version_counts.values() if n == 2),
+        "keys_three_versions": sum(1 for n in version_counts.values() if n == 3),
+        "keys_four_plus": sum(1 for n in version_counts.values() if n >= 4),
+        "keys_multi_version": sum(1 for n in version_counts.values() if n >= 2),
+        "keys_three_plus": sum(1 for n in version_counts.values() if n >= 3),
         "total_reported": page.get("total"),
         "truncated": truncated,
         "states": dict(states),
@@ -359,6 +415,7 @@ def collect(
     errors: list[dict[str, Any]] = []
     catalog: list[dict[str, Any]] = []
     truncated_any = False
+    owner_names = _fetch_owner_names(client)
 
     for name in walk.domains:
         dclient = walk.clients.get(name)
@@ -397,6 +454,9 @@ def collect(
             truncated_any = True
         catalog.extend(result.get("catalog") or [])
         checked.append({k: v for k, v in result.items() if k != "catalog"})
+        owner_names.update(_fetch_owner_names(dclient))
+
+    _apply_owner_names(catalog, owner_names)
 
     report: dict[str, Any] = {
         "ok": True,
