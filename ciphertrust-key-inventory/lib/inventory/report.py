@@ -316,6 +316,32 @@ def _fmt_list(rows: list[str], total: int) -> list[str]:
     return rows
 
 
+def _dedupe_by_name(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
+    """Collapse list rows to one entry per (domain, name).
+
+    Keeps the highest-version row as the representative and counts how many
+    version objects of that name are in the given list.
+    """
+    groups: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
+    order: list[tuple[str, str]] = []
+    for r in rows:
+        key = _row_name_key(r)
+        found = groups.get(key)
+        if found is None:
+            groups[key] = (r, 1)
+            order.append(key)
+        else:
+            rep, n = found
+            if int(r.get("version") or 0) > int(rep.get("version") or 0):
+                rep = r
+            groups[key] = (rep, n + 1)
+    return [groups[k] for k in order]
+
+
+def _vers_suffix(n: int) -> str:
+    return f" ({n} versions)" if n > 1 else ""
+
+
 def print_human(report: dict[str, Any]) -> None:
     if not report.get("ok"):
         print("Key inventory")
@@ -403,12 +429,15 @@ def print_human(report: dict[str, Any]) -> None:
     print()
     print(f"=== System keys ({len(system_rows)}) ===")
     if system_rows:
+        groups = _dedupe_by_name(system_rows)
         lines = []
-        for r in system_rows[:CHAT_LIST_CAP]:
+        for r, n in groups[:CHAT_LIST_CAP]:
             kind = r.get("system_kind") or "system"
             svc = f" {r.get('service_name')}" if r.get("service_name") else ""
-            lines.append(f"- [{r.get('domain')}] {r.get('name')} ({kind}{svc})")
-        print("\n".join(_fmt_list(lines, len(system_rows))))
+            lines.append(
+                f"- [{r.get('domain')}] {r.get('name')} ({kind}{svc}){_vers_suffix(n)}"
+            )
+        print("\n".join(_fmt_list(lines, len(groups))))
     else:
         print("none")
 
@@ -416,10 +445,11 @@ def print_human(report: dict[str, Any]) -> None:
     print()
     print(f"=== Akeyless Customer Fragments ({len(cf_rows)}) ===")
     if cf_rows:
+        groups = _dedupe_by_name(cf_rows)
         lines = []
-        for r in cf_rows[:CHAT_LIST_CAP]:
-            lines.append(f"- [{r.get('domain')}] {r.get('name')}")
-        print("\n".join(_fmt_list(lines, len(cf_rows))))
+        for r, n in groups[:CHAT_LIST_CAP]:
+            lines.append(f"- [{r.get('domain')}] {r.get('name')}{_vers_suffix(n)}")
+        print("\n".join(_fmt_list(lines, len(groups))))
     else:
         print("none")
 
@@ -427,12 +457,14 @@ def print_human(report: dict[str, Any]) -> None:
     print()
     print(f"=== Weak keys ({len(weak_rows)}) ===")
     if weak_rows:
+        groups = _dedupe_by_name(weak_rows)
         lines = []
-        for r in weak_rows[:CHAT_LIST_CAP]:
+        for r, n in groups[:CHAT_LIST_CAP]:
             lines.append(
-                f"- [{r.get('domain')}] {r.get('name')} — {r.get('weak_reason') or 'weak'}"
+                f"- [{r.get('domain')}] {r.get('name')} — "
+                f"{r.get('weak_reason') or 'weak'}{_vers_suffix(n)}"
             )
-        print("\n".join(_fmt_list(lines, len(weak_rows))))
+        print("\n".join(_fmt_list(lines, len(groups))))
     else:
         print("none")
 
@@ -443,15 +475,16 @@ def print_human(report: dict[str, Any]) -> None:
     print(f"=== CTE keys ({len(cte_rows)}) ===")
     if cte_rows:
         print(f"LDT Policy compatible {len(cte_ldt)}. Standard policy compatible {len(cte_std)}.")
+        groups = _dedupe_by_name(cte_rows)
         lines = []
-        for r in cte_rows[:CHAT_LIST_CAP]:
+        for r, n in groups[:CHAT_LIST_CAP]:
             policy = r.get("cte_policy") or "Standard"
             mode = r.get("cte_encryption_mode")
             extra = f" · {mode}" if mode else ""
             lines.append(
-                f"- [{r.get('domain')}] {r.get('name')} — {policy}{extra}"
+                f"- [{r.get('domain')}] {r.get('name')} — {policy}{extra}{_vers_suffix(n)}"
             )
-        print("\n".join(_fmt_list(lines, len(cte_rows))))
+        print("\n".join(_fmt_list(lines, len(groups))))
     else:
         print("none")
 
@@ -472,19 +505,12 @@ def print_human(report: dict[str, Any]) -> None:
         print(f"{due_lbl}: {len(life_change)}")
         print(f"Inactive latest version: {len(life_inactive)}")
         print(f"Never rotated / older than 1y: {len(life_old)}")
-        notable = []
-        seen = set()
-        for r in life_change + life_inactive:
-            kid = (r.get("domain"), r.get("id") or r.get("name"))
-            if kid in seen:
-                continue
-            seen.add(kid)
-            notable.append(r)
+        notable = _dedupe_by_name(life_change + life_inactive)
         if notable:
             lines = []
-            for r in notable[:CHAT_LIST_CAP]:
+            for r, n in notable[:CHAT_LIST_CAP]:
                 why = ", ".join(lifecycle_reasons(r, window)) or "lifecycle"
-                lines.append(f"- [{r.get('domain')}] {r.get('name')} — {why}")
+                lines.append(f"- [{r.get('domain')}] {r.get('name')} — {why}{_vers_suffix(n)}")
             print("\n".join(_fmt_list(lines, len(notable))))
         elif life_old:
             print("Names for never-rotated / old keys are in JSON/HTML.")

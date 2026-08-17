@@ -111,13 +111,13 @@ Details: [references/checklist.md](references/checklist.md).
 | Interfaces | Interface modes/TLS; web PQC TLS groups; leaf TLS cert expiry (`/interfaces/{name}/certificate`); log forwarders; SSH/SNMP/preboot; SMTP |
 | Access | Password policies, LDAP TLS, users (locked / never-login / inactive / failed logins / top logins) |
 | CAs | Per-domain local/external + appliance trusted cert expiry (expired CRITICAL; ≤30d WARNING; >30d INFO) |
-| Keys | Prometheus vault DEK totals + per-domain vault scan (weak / inactive keys) |
+| Keys | Prometheus DEK totals (all keys on CM) + per-domain key scan (weak / inactive keys) |
 | CTE | Client health, GuardPoints, Learn Mode (`--no-cte` to skip) |
 | Audit | `ENABLE_RECORDS_DB_STORE`: if on → DB records; if off → note disabled + Loki `/v1/audit/loki/api/v1/query_range` |
 
 ### Keys
 
-- Estate key count: Prometheus vault DEK totals when enabled. Never print the scrape token.
+- Estate key count: Prometheus DEK totals when enabled. Never print the scrape token.
 - Per domain: login with token `domain` parameter, page `/v1/vault/keys2/` and users.
 - Domain 401/403: skip and report that the domain could not be checked.
 

@@ -88,12 +88,12 @@ Read-only CipherTrust Manager REST checks. Prefer the runner
 ## Keys
 
 24. Estate key count: scrape `GET /v1/system/metrics/prometheus` when enabled (never include scrape token).
-    Report vault **DEK** totals — do not sum per-domain license
+    Report Prometheus **DEK** totals — do not sum per-domain license
     `key_usage_count_including_subdomains` series (under/over-counts the estate).
 25. Per domain (weak/inactive keys + user hygiene): authenticate with token `domain` parameter,
     then page `/v1/vault/keys2/` and `/v1/usermgmt/users/`
     - Weak keys → WARNING: RSA &lt; 2048; any DES/DESede/3DES; AES/ARIA &lt; 128; EC size &lt; 256 or ~224-bit curves
-    - Prefer `keys2` filters (`algorithm`, repeated `size`, repeated `curveid`) to find weak candidates; `--max-keys` still caps the general vault sample (inactive/state)
+    - Prefer `keys2` filters (`algorithm`, repeated `size`, repeated `curveid`) to find weak candidates; `--max-keys` still caps the general key sample (inactive/state)
     - Highest key version inactive (not `Active`) → WARNING
     - User hygiene + top 5 by logins (see access control)
     - Domain auth 401/403 → skip and tell the user that domain could not be checked (not CRITICAL by itself)

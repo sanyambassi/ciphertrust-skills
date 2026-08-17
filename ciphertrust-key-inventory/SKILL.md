@@ -94,6 +94,7 @@ CM: <version>    Host: <hostname from CM_BASE>
 Domains checked: <n>    skipped: <n>
 Versions: <n>
 Total keys (including orphaned): <n>
+Orphaned keys: <n>
 Never exported: <n>
 Never exportable: <n>
 CTE keys: <n>    LDT: <n>    Standard: <n>
@@ -102,7 +103,7 @@ Akeyless Customer Fragments: <n>
 
 **2. Totals table** — copy rows from the script’s `=== Totals by domain ===` block.
 
-**3. Lists** — copy **System keys**, **Akeyless Customer Fragments**, **Weak keys**, **CTE keys**, and **Lifecycle** from the script. Always include Akeyless Customer Fragments (the list, or “none”). If the script says `N more in JSON/HTML`, keep that line and point at the file(s).
+**3. Lists** — copy **Keys and Versions**, **System keys**, **Akeyless Customer Fragments**, **Weak keys**, **CTE keys**, and **Lifecycle** from the script. Always include Akeyless Customer Fragments (the list, or “none”). If the script says `N more in JSON/HTML`, keep that line and point at the file(s).
 
 **4. Caveat** (when the script prints it): **domains checked** vs **domains skipped**. Skipped ≠ no keys in that domain.
 
