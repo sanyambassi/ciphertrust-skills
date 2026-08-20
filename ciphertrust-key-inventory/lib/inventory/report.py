@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import csv
 import json
+import statistics
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .classify import is_akeyless_cf
+from .classify import is_akeyless_cf, parse_date
 
 CHAT_LIST_CAP = 100
 
@@ -55,6 +57,11 @@ _CSV_COLUMNS = [
     "days_to_activate",
     "rotation_due",
     "never_rotated",
+    "last_rotated_at",
+    "days_since_rotation",
+    "rotation_gap_days",
+    "versions_purged",
+    "rotation_stalled",
     "older_than_1y",
     "older_than_3y",
     "cte",
@@ -105,6 +112,7 @@ def is_lifecycle(row: dict[str, Any]) -> bool:
         or row.get("inactive")
         or (row.get("never_rotated") and row.get("older_than_1y"))
         or row.get("older_than_3y")
+        or row.get("rotation_stalled")
     )
 
 
@@ -125,6 +133,11 @@ def lifecycle_reasons(row: dict[str, Any], window_days: int) -> list[str]:
         reasons.append("rotation due")
     if row.get("never_rotated") and row.get("older_than_1y"):
         reasons.append("never rotated and older than 1 year")
+    if row.get("rotation_stalled"):
+        last = str(row.get("last_rotated_at") or "")[:10]
+        reasons.append(
+            f"rotation stalled (last rotated {last})" if last else "rotation stalled"
+        )
     if row.get("older_than_3y"):
         reasons.append("older than 3 years")
     elif row.get("older_than_1y") and not row.get("never_rotated"):
@@ -155,6 +168,73 @@ def _latest_per_name(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if prev is None or int(r.get("version") or 0) > int(prev.get("version") or 0):
             best[key] = r
     return list(best.values())
+
+
+def _version_int(row: dict[str, Any]) -> int | None:
+    raw = row.get("version")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def annotate_rotation(rows: list[dict[str, Any]], now: datetime) -> None:
+    """Attach rotation facts to each key group's newest version row.
+
+    A rotation is the creation of a new key version, so the newest
+    version object's ``createdAt`` is the last-rotation timestamp.
+    The version ID counts generations even when older versions were
+    purged by retention (latest v201 with 10 objects => ~192 purged).
+    """
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in rows:
+        if isinstance(r, dict):
+            groups.setdefault(_row_name_key(r), []).append(r)
+    for vers in groups.values():
+        newest = max(vers, key=lambda v: _version_int(v) or 0)
+        latest = _version_int(newest)
+        dates = sorted(
+            d for d in (parse_date(v.get("createdAt")) for v in vers) if d
+        )
+        gaps = [
+            (b - a).total_seconds() / 86400.0 for a, b in zip(dates, dates[1:])
+        ]
+        gap = round(float(statistics.median(gaps)), 1) if gaps else None
+        if gap is not None and gap <= 0:
+            gap = None
+        purged = None
+        if latest is not None and latest >= 0:
+            purged = max(latest + 1 - len(vers), 0)
+        if purged:
+            # Gaps between surviving versions overstate the cadence when
+            # retention purged generations in between.
+            gap = None
+        last_iso: str | None = None
+        days_since: int | None = None
+        bucket: str | None = None
+        if latest is not None and latest > 0:
+            last_iso = str(newest.get("createdAt") or "") or None
+            last_dt = parse_date(last_iso)
+            if last_dt:
+                days_since = (now - last_dt).days
+                if days_since <= 30:
+                    bucket = "30d"
+                elif days_since <= 90:
+                    bucket = "90d"
+                elif days_since <= 365:
+                    bucket = "365d"
+                else:
+                    bucket = "stale"
+        elif latest == 0:
+            bucket = "never"
+        newest["last_rotated_at"] = last_iso
+        newest["days_since_rotation"] = days_since
+        newest["versions_purged"] = purged
+        newest["rotation_gap_days"] = gap
+        newest["rotation_stalled"] = bucket == "stale"
+        newest["rotation_bucket"] = bucket
 
 
 def _version_name_buckets(name_counts: Counter) -> dict[str, int]:
@@ -284,6 +364,21 @@ def build_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "cte_standard": sum(
             1 for r in objects if r.get("cte") and r.get("cte_policy") != "LDT"
         ),
+        "never_rotated_keys": sum(
+            1 for r in unique_rows if r.get("rotation_bucket") == "never"
+        ),
+        "rotated_30d": sum(
+            1 for r in unique_rows if r.get("rotation_bucket") == "30d"
+        ),
+        "rotated_31_90d": sum(
+            1 for r in unique_rows if r.get("rotation_bucket") == "90d"
+        ),
+        "rotated_91_365d": sum(
+            1 for r in unique_rows if r.get("rotation_bucket") == "365d"
+        ),
+        "rotation_stalled": sum(
+            1 for r in unique_rows if r.get("rotation_bucket") == "stale"
+        ),
         "by_domain": domain_rows,
         "by_algorithm": dict(by_algorithm.most_common()),
         "by_state": dict(by_state.most_common()),
@@ -303,6 +398,10 @@ def apply_presentation(report: dict[str, Any], filter_opts: dict[str, Any]) -> d
                 r["cte_policy"] = None
                 r["cte_encryption_mode"] = None
     shown = filter_catalog(collected, filter_opts)
+    now = parse_date(str(report.get("timestamp_utc") or "")) or datetime.now(
+        timezone.utc
+    )
+    annotate_rotation(shown, now)
     report["catalog_collected"] = len(collected)
     report["catalog"] = shown
     report["filters"] = {k: v for k, v in filter_opts.items() if v not in (None, False, "")}
@@ -413,14 +512,35 @@ def print_human(report: dict[str, Any]) -> None:
     print(f"2 versions (IDs 0 and 1): {totals.get('keys_two_versions', 0)}")
     print(f"3 versions (IDs 0, 1, and 2): {totals.get('keys_three_versions', 0)}")
     print(f"3+ versions (ID 3 exists): {totals.get('keys_four_plus', 0)}")
+    print(
+        f"Never rotated (latest is version 0): {totals.get('never_rotated_keys', 0)} keys"
+    )
+    print(
+        f"Last rotation: <=30d: {totals.get('rotated_30d', 0)}, "
+        f"31-90d: {totals.get('rotated_31_90d', 0)}, "
+        f"91-365d: {totals.get('rotated_91_365d', 0)}, "
+        f">1y (stalled): {totals.get('rotation_stalled', 0)}"
+    )
     name_counts: Counter = Counter(_row_name_key(r) for r in catalog)
+    latest_map = {_row_name_key(r): r for r in _latest_per_name(catalog)}
     multi = [(key, n) for key, n in name_counts.items() if n >= 2]
     multi.sort(key=lambda item: (-item[1], item[0][0], item[0][1]))
     if multi:
-        lines = [
-            f"- [{domain}] {name} — {n} versions"
-            for (domain, name), n in multi[:CHAT_LIST_CAP]
-        ]
+        lines = []
+        for (domain, name), n in multi[:CHAT_LIST_CAP]:
+            extra = ""
+            rep = latest_map.get((domain, name))
+            if rep:
+                ver = rep.get("version")
+                if ver not in (None, ""):
+                    extra += f", latest v{ver}"
+                last = str(rep.get("last_rotated_at") or "")[:10]
+                if last:
+                    extra += f", last rotated {last}"
+                purged = rep.get("versions_purged")
+                if purged:
+                    extra += f", {purged} purged"
+            lines.append(f"- [{domain}] {name} — {n} versions{extra}")
         print("\n".join(_fmt_list(lines, len(multi))))
     else:
         print("none with 2+ versions")
@@ -496,6 +616,7 @@ def print_human(report: dict[str, Any]) -> None:
         for r in life_rows
         if (r.get("never_rotated") and r.get("older_than_1y")) or r.get("older_than_3y")
     ]
+    life_stalled = [r for r in life_rows if r.get("rotation_stalled")]
     life_n = len(life_rows)
     print()
     print(f"=== Lifecycle ({life_n}) ===")
@@ -505,6 +626,7 @@ def print_human(report: dict[str, Any]) -> None:
         print(f"{due_lbl}: {len(life_change)}")
         print(f"Inactive latest version: {len(life_inactive)}")
         print(f"Never rotated / older than 1y: {len(life_old)}")
+        print(f"Rotation stalled (>1y since last rotation): {len(life_stalled)}")
         notable = _dedupe_by_name(life_change + life_inactive)
         if notable:
             lines = []

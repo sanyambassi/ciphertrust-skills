@@ -225,7 +225,7 @@ def _why_badge_class(reason: str) -> str:
     low = (reason or "").lower()
     if "older than 3" in low:
         return "fail"
-    if "never rotated" in low or "older than 1" in low:
+    if "never rotated" in low or "older than 1" in low or "stalled" in low:
         return "warn"
     return "ok"
 
@@ -479,6 +479,12 @@ _OWNER_DIFF_TITLE = "Owner differs from version ID 0"
 _OWNER_DIFF_ANY_TITLE = (
     "One or more versions have an owner different from version ID 0"
 )
+_NEVER_ROTATED_TIP = (
+    "Keys whose latest version ID is 0 — no new version (rotation) was ever created"
+)
+_ROT_STALLED_TIP = (
+    "Keys that were rotated before, but the newest version is more than a year old"
+)
 
 
 def _owner_id(r: dict[str, Any]) -> str:
@@ -524,6 +530,28 @@ def _td(value: Any, *, mismatch: bool = False) -> str:
             f"{esc(value)}</td>"
         )
     return f"<td>{esc(value)}</td>"
+
+
+def _rot_cell(r: dict[str, Any]) -> str:
+    """Last-rotated cell for a key's group row (newest version)."""
+    if r.get("rotation_bucket") == "never":
+        return "<td class='cell-rot'>never</td>"
+    last = str(r.get("last_rotated_at") or "")[:10]
+    if not last:
+        return "<td></td>"
+    bits = []
+    days = r.get("days_since_rotation")
+    if days is not None:
+        bits.append(f"{days}d ago")
+    gap = r.get("rotation_gap_days")
+    if gap:
+        bits.append(f"median gap between kept versions {gap:g}d")
+    purged = r.get("versions_purged")
+    if purged:
+        bits.append(f"{purged} older versions purged")
+    tip = f" title='{esc('; '.join(bits))}'" if bits else ""
+    cls = " stale-rot" if r.get("rotation_stalled") else ""
+    return f"<td class='cell-rot{cls}'{tip}>{esc(last)}</td>"
 
 
 def _group_by_key_name(
@@ -675,6 +703,8 @@ def _overview_panel(report: dict[str, Any]) -> str:
         f"{_kpi('Weak', totals.get('weak', 0), 'warn' if _n(totals.get('weak')) else '')}"
         f"{_kpi('Inactive', totals.get('inactive', 0), 'warn' if _n(totals.get('inactive')) else '')}"
         f"{_kpi(due_lbl, totals.get('about_to_change', 0), '', _about_to_change_tip(window))}"
+        f"{_kpi('Never rotated', totals.get('never_rotated_keys', 0), '', _NEVER_ROTATED_TIP)}"
+        f"{_kpi('Rotation stalled (>1y)', totals.get('rotation_stalled', 0), 'warn' if _n(totals.get('rotation_stalled')) else '', _ROT_STALLED_TIP)}"
         f"{_kpi('Exportable', totals.get('exportable', 0), '')}"
         f"{_kpi('Never exported', totals.get('never_exported', 0), '')}"
         f"{_kpi('Never exportable', totals.get('never_exportable', 0), '')}"
@@ -1225,6 +1255,7 @@ def _catalog_panel(report: dict[str, Any]) -> str:
             f"{_cell_key(name, _key_name_inner(domain, name, n), mismatch=any_diff, title=_OWNER_DIFF_ANY_TITLE if any_diff else None)}"
             f"<td>{esc(n)}</td>"
             f"{_catalog_version_cells(top, mismatch=_owner_mismatch(top, baseline))}"
+            f"{_rot_cell(top)}"
             "</tr>"
         )
         if n > 1:
@@ -1236,9 +1267,11 @@ def _catalog_panel(report: dict[str, Any]) -> str:
                     f"{_cell_key(name, _child_key_inner(name, mismatch=mismatch), mismatch=mismatch)}"
                     "<td></td>"
                     f"{_catalog_version_cells(v, mismatch=mismatch)}"
+                    "<td></td>"
                     "</tr>"
                 )
-            body_parts.append(_more_versions_row(domain, name, gid, n, 17))
+            body_parts.append(_more_versions_row(domain, name, gid, n, 18))
+    stalled_n = _n(totals.get("rotation_stalled"))
     kpis = (
         f"<div class='kpis kpis-tight'>{_kpi_pair('Key names', totals.get('keys', 0), 'Version objects', totals.get('version_objects', len(rows)))}</div>"
         "<div class='kpis kpis-tight kpis-versions'>"
@@ -1246,6 +1279,12 @@ def _catalog_panel(report: dict[str, Any]) -> str:
         f"{_kpi('Keys with 2 versions', totals.get('keys_two_versions', 0), '')}"
         f"{_kpi('Keys with 3 versions', totals.get('keys_three_versions', 0), '')}"
         f"{_kpi('Keys with 3+ versions', totals.get('keys_four_plus', 0), '')}"
+        "</div>"
+        "<div class='kpis kpis-tight kpis-versions'>"
+        f"{_kpi('Never rotated', totals.get('never_rotated_keys', 0), '', _NEVER_ROTATED_TIP)}"
+        f"{_kpi('Rotated ≤90d', _n(totals.get('rotated_30d')) + _n(totals.get('rotated_31_90d')), '')}"
+        f"{_kpi('Rotated 91–365d', totals.get('rotated_91_365d', 0), '')}"
+        f"{_kpi('Rotation stalled (>1y)', stalled_n, 'warn' if stalled_n else '', _ROT_STALLED_TIP)}"
         "</div>"
     )
     headers = [
@@ -1268,6 +1307,7 @@ def _catalog_panel(report: dict[str, Any]) -> str:
         ("Owner", None),
         ("Service", None),
         ("Created", None),
+        ("Last rotated", 19),
     ]
     th_parts = []
     for label, sort_col in headers:
@@ -1282,7 +1322,9 @@ def _catalog_panel(report: dict[str, Any]) -> str:
         "<p class='table-hint'>Domain and key stay on the left. Scroll sideways for flags, owner, and dates. "
         "Expand shows the 5 newest versions. Open a key name for the full list. "
         "The key name is red if any version’s owner differs from version ID 0. "
-        "That version’s Key, Version ID, and Owner are also red.</p>"
+        "That version’s Key, Version ID, and Owner are also red. "
+        "Last rotated is when the newest version was created; hover it for "
+        "cadence and purged-version counts.</p>"
         "<div class='cat-toolbar'>"
         "<input id='cat-filter' type='search' placeholder='Filter catalog'/>"
         "<label>Sort "
@@ -1293,6 +1335,7 @@ def _catalog_panel(report: dict[str, Any]) -> str:
         "<option value='3'>Algorithm</option>"
         "<option value='7'>State</option>"
         "<option value='13'>Policy</option>"
+        "<option value='19'>Last rotated</option>"
         "</select></label>"
         "<label>Rows "
         "<select id='cat-page-size'>"
@@ -1338,6 +1381,25 @@ def _key_detail_panel(report: dict[str, Any]) -> str:
         baseline = _baseline_owner_id(vers)
         any_diff = _any_owner_mismatch(vers, baseline)
         h2_cls = " class='owner-diff-name'" if any_diff else ""
+        top = ordered[0]
+        rot_bits: list[str] = []
+        ver = top.get("version")
+        if ver not in (None, ""):
+            rot_bits.append(f"Latest version ID {ver}")
+        purged = top.get("versions_purged")
+        if purged:
+            rot_bits.append(f"{purged} older versions purged by retention")
+        last = str(top.get("last_rotated_at") or "")[:10]
+        if last:
+            days = top.get("days_since_rotation")
+            rot_bits.append(
+                f"last rotated {last}"
+                + (f" ({days}d ago)" if days is not None else "")
+            )
+        gap = top.get("rotation_gap_days")
+        if gap:
+            rot_bits.append(f"rotates ~every {gap:g}d (median of kept versions)")
+        rot_line = (" " + esc(" · ".join(rot_bits)) + ".") if rot_bits else ""
         rows = []
         for v in ordered:
             mismatch = _owner_mismatch(v, baseline)
@@ -1356,7 +1418,8 @@ def _key_detail_panel(report: dict[str, Any]) -> str:
             f"<span class='st MUTED'>{n} versions</span></div>"
             f"<div class='summary'>Domain {esc(domain)}. Every version object for this key, newest first. "
             "Version ID is 0-based (0 = first version). "
-            "A version whose owner differs from version ID 0 is shown in red.</div></div>"
+            "A version whose owner differs from version ID 0 is shown in red."
+            f"{rot_line}</div></div>"
             "<div class='card'>"
             "<p class='table-hint'><a class='key-back' href='#catalog'>Back to Catalog</a></p>"
             "<div class='table-wrap'><table><thead><tr>"
@@ -1799,6 +1862,26 @@ def _tab_charts(report: dict[str, Any]) -> dict[str, list[dict]]:
             tooltip_value_unit="keys",
         ),
     )
+    add(
+        "catalog",
+        _caption(
+            _doughnut(
+                "rot-recency",
+                "Last rotation",
+                [
+                    ("≤30d", totals.get("rotated_30d"), _PAL["pass"]),
+                    ("31–90d", totals.get("rotated_31_90d"), _PAL["info"]),
+                    ("91–365d", totals.get("rotated_91_365d"), _PAL["warn"]),
+                    (">1y (stalled)", totals.get("rotation_stalled"), _PAL["fail"]),
+                    ("Never", totals.get("never_rotated_keys"), _PAL["muted"]),
+                ],
+                "keys",
+                include_count=False,
+                tooltip_value_unit="keys",
+            ),
+            f"{_SCOPE_ACCESSIBLE}. Rotation = a new key version was created.",
+        ),
+    )
     top = [item for item in name_groups if len(item[1]) >= 2][:15]
     if top:
         add(
@@ -2220,6 +2303,8 @@ a.key-link {
 a.key-link:hover { color: var(--info); border-bottom-color: var(--info); }
 td.cell-owner-diff a.key-link:hover { color: var(--fail); border-bottom-color: var(--fail); }
 h2.owner-diff-name { color: var(--fail); }
+td.cell-rot { white-space: nowrap; }
+td.cell-rot.stale-rot { color: var(--warn); font-weight: 600; }
 .cell-more {
   white-space: nowrap;
   color: var(--muted);

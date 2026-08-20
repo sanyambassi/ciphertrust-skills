@@ -8,8 +8,7 @@ description: >-
   mentions CipherTrust, CipherTrust Manager, CM, CTM, Thales KMS, Thales key
   manager, or KeySecure, and asks for a key inventory, catalog of keys on CM,
   list of keys, weak keys, key lifecycle, exportable keys, CTE keys, LDT vs
-  Standard keys, or Akeyless Customer Fragments — not appliance health or
-  posture.
+  Standard keys, or Akeyless Customer Fragments.
 ---
 
 # CipherTrust Manager key inventory
@@ -116,15 +115,16 @@ Akeyless Customer Fragments: <n>
 | Area | What you get |
 |------|----------------|
 | Catalog | One row per key name in checked domains. Version ID is CM `version` (0 is the first). Versions is how many objects that name has. Also algorithm, size/curve, state, dates, owner, exportable/deletable, CTE metadata |
+| Rotation | Derived from version objects — no extra API calls. A rotation = a new version; the newest version's `createdAt` is **Last rotated**. Version ID counts generations even when retention purged old versions (latest v201 with 10 kept ⇒ ~192 purged). Buckets: rotated ≤30d / 31–90d / 91–365d / >1y (stalled) / never. Median gap between kept versions estimates cadence |
 | System | `citrus-*` names, and `ks-*` names that have `meta.service_name` and no owner |
 | Akeyless CF | In each checked domain, hunt `name=cf-*`. Classify `cf-<uuid>`. Usually Opaque Object, no owner. Not system keys |
 | Weak | Full list: RSA &lt;2048, DES/3DES, AES/ARIA &lt;128, EC &lt;256 or a weak curve |
 | CTE | Keys with a `meta.cte` section **and an owner**. Ownerless `meta.cte` (common on citrus system keys) is ignored. `cte_versioned` true → LDT policies; false or not set → Standard policies |
-| Lifecycle | App/user keys only (excludes system and Akeyless CF). Inactive; activation / deactivation / protect-stop in `--window-days`; rotation due; never rotated and older than one year; or older than three years |
+| Lifecycle | App/user keys only (excludes system and Akeyless CF). Inactive; activation / deactivation / protect-stop in `--window-days`; rotation due; never rotated and older than one year; rotation stalled (>1y since last rotation); or older than three years |
 | Orphans | Orphaned keys by deleted-domain account (skipped on `--domain`) |
 | Metrics | Total keys including orphaned. Overview State, Algorithms, and Versions by domain use that estate count when Prometheus DEK series exist (skipped on `--domain`). Versions by domain lists every domain (orphans included). Otherwise it uses version objects — the same count as CM `GET /v1/vault/keys2` `total` |
 
-HTML catalog: expand a name for the 5 newest versions; the name opens every version in a new tab. Cards: 1 version (ID 0 only), 2 versions (IDs 0–1), 3 versions (IDs 0–2), 3+ (version ID 3 exists). Owner shows `local|Name (user|group)`. Red means a later version’s owner differs from version 0.
+HTML catalog: expand a name for the 5 newest versions; the name opens every version in a new tab. Cards: 1 version (ID 0 only), 2 versions (IDs 0–1), 3 versions (IDs 0–2), 3+ (version ID 3 exists), plus rotation recency (never / ≤90d / 91–365d / stalled). Owner shows `local|Name (user|group)`. Red means a later version’s owner differs from version 0. Last rotated is on the key row; hover for cadence and purged-version counts. The key page header shows latest generation, purged count, and median rotation gap.
 
 Per domain: authenticate with the token `domain` parameter, page keys in that domain with `fields=meta` and no default cap, hunt `citrus-*`, `ks-*` Opaque, and `cf-*`, and skip 401/403.
 
@@ -134,15 +134,6 @@ Per domain: authenticate with the token `domain` parameter, page keys in that do
 |--------|------|
 | Inventory completed | 0 |
 | Unreachable or auth failed | 2 |
-
-## Out of scope (default run)
-
-- Appliance health scoring
-- Users, CTE clients, interfaces, licenses, backups, alarms
-- Treating every `ks-*` name as a system key
-- Treating every `cf-*` name as an Akeyless Customer Fragment
-- Create / PATCH keys
-- Export, destroy, delete, revoke, archive, recover, reactivate, clone, or rotate
 
 ## Layout (this skill)
 

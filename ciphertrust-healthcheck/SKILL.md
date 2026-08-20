@@ -135,12 +135,6 @@ Details: [references/checklist.md](references/checklist.md).
 | DEGRADED | 1 |
 | CRITICAL or UNREACHABLE | 2 |
 
-## Out of scope
-
-- Changing CM configuration
-- Downloading API definition files
-- Dumping full audit tables (script uses filtered counts and samples)
-
 ## Layout (this skill)
 
 ```text
